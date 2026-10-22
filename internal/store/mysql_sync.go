@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -318,4 +319,197 @@ func (m *MySQLSync) GetUserByAPIKey(apiKey string) (*models.User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// LoadBatchers fetches all batch workers from MySQL.
+func (m *MySQLSync) LoadBatchers() ([]models.Batcher, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	rows, err := m.db.Query(`
+		SELECT id, name, job_key, schedule, cron_expr, status, concurrency,
+		       last_run, duration, records_processed, target_queue, description
+		FROM batchers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []models.Batcher
+	for rows.Next() {
+		var b models.Batcher
+		var duration, recs, queue, desc sql.NullString
+		err := rows.Scan(
+			&b.ID, &b.Name, &b.JobKey, &b.Schedule, &b.CronExpr, &b.Status,
+			&b.Concurrency, &b.LastRun, &duration, &recs, &queue, &desc,
+		)
+		if err != nil {
+			continue
+		}
+		if duration.Valid {
+			b.Duration = duration.String
+		}
+		if recs.Valid {
+			b.RecordsProcessed = recs.String
+		}
+		if queue.Valid {
+			b.TargetQueue = queue.String
+		}
+		if desc.Valid {
+			b.Description = desc.String
+		}
+		result = append(result, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SaveBatcher inserts or updates a batch worker in MySQL.
+func (m *MySQLSync) SaveBatcher(b models.Batcher) {
+	if m == nil || m.db == nil {
+		return
+	}
+	query := `
+		INSERT INTO batchers (
+			id, name, job_key, schedule, cron_expr, status, concurrency,
+			last_run, duration, records_processed, target_queue, description
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			name = VALUES(name),
+			job_key = VALUES(job_key),
+			schedule = VALUES(schedule),
+			cron_expr = VALUES(cron_expr),
+			status = VALUES(status),
+			concurrency = VALUES(concurrency),
+			last_run = VALUES(last_run),
+			duration = VALUES(duration),
+			records_processed = VALUES(records_processed),
+			target_queue = VALUES(target_queue),
+			description = VALUES(description)`
+
+	lastRun := b.LastRun
+	if lastRun.IsZero() {
+		lastRun = time.Now()
+	}
+
+	_, err := m.db.Exec(query,
+		b.ID, b.Name, b.JobKey, b.Schedule, b.CronExpr, b.Status, b.Concurrency,
+		lastRun, b.Duration, b.RecordsProcessed, b.TargetQueue, b.Description,
+	)
+	if err != nil {
+		logger.Warn("Failed to persist batcher %s to MySQL: %v", b.ID, err)
+	}
+}
+
+// DeleteBatcher removes a batcher from MySQL.
+func (m *MySQLSync) DeleteBatcher(id string) {
+	if m == nil || m.db == nil {
+		return
+	}
+	m.db.Exec("DELETE FROM batchers WHERE id = ?", id)
+}
+
+// LoadIncidents fetches all incidents from MySQL.
+func (m *MySQLSync) LoadIncidents() ([]models.Incident, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	rows, err := m.db.Query(`
+		SELECT id, monitor_id, title, service, url, severity, status,
+		       started_at, duration, cause, dispatched_to_json, resolved_at
+		FROM incidents`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []models.Incident
+	for rows.Next() {
+		var inc models.Incident
+		var monID, duration, cause, dispatchJSON sql.NullString
+		var resolvedAt sql.NullTime
+
+		err := rows.Scan(
+			&inc.ID, &monID, &inc.Title, &inc.Service, &inc.URL, &inc.Severity,
+			&inc.Status, &inc.StartedAt, &duration, &cause, &dispatchJSON, &resolvedAt,
+		)
+		if err != nil {
+			continue
+		}
+		if monID.Valid {
+			inc.MonitorID = monID.String
+		}
+		if duration.Valid {
+			inc.Duration = duration.String
+		}
+		if cause.Valid {
+			inc.Cause = cause.String
+		}
+		if dispatchJSON.Valid && dispatchJSON.String != "" {
+			_ = json.Unmarshal([]byte(dispatchJSON.String), &inc.DispatchedTo)
+		}
+		if resolvedAt.Valid {
+			t := resolvedAt.Time
+			inc.ResolvedAt = &t
+		}
+		result = append(result, inc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SaveIncident inserts or updates an incident in MySQL.
+func (m *MySQLSync) SaveIncident(inc models.Incident) {
+	if m == nil || m.db == nil {
+		return
+	}
+
+	dispatchBytes, _ := json.Marshal(inc.DispatchedTo)
+	var resolvedAtVal interface{}
+	if inc.ResolvedAt != nil {
+		resolvedAtVal = *inc.ResolvedAt
+	}
+
+	query := `
+		INSERT INTO incidents (
+			id, monitor_id, title, service, url, severity, status,
+			started_at, duration, cause, dispatched_to_json, resolved_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			monitor_id = VALUES(monitor_id),
+			title = VALUES(title),
+			service = VALUES(service),
+			url = VALUES(url),
+			severity = VALUES(severity),
+			status = VALUES(status),
+			started_at = VALUES(started_at),
+			duration = VALUES(duration),
+			cause = VALUES(cause),
+			dispatched_to_json = VALUES(dispatched_to_json),
+			resolved_at = VALUES(resolved_at)`
+
+	startedAt := inc.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+
+	_, err := m.db.Exec(query,
+		inc.ID, inc.MonitorID, inc.Title, inc.Service, inc.URL, inc.Severity,
+		inc.Status, startedAt, inc.Duration, inc.Cause, string(dispatchBytes), resolvedAtVal,
+	)
+	if err != nil {
+		logger.Warn("Failed to persist incident %s to MySQL: %v", inc.ID, err)
+	}
+}
+
+// DeleteIncident removes an incident from MySQL.
+func (m *MySQLSync) DeleteIncident(id string) {
+	if m == nil || m.db == nil {
+		return
+	}
+	m.db.Exec("DELETE FROM incidents WHERE id = ?", id)
 }

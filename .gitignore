@@ -10,8 +10,9 @@
 # Go workspace and test binaries
 *.test
 *.out
-/data/*.tmp
-/data/openboy_state.json.tmp
+# Persistent data directory
+/data/
+*.json.tmp
 
 # Secrets and environment
 .env

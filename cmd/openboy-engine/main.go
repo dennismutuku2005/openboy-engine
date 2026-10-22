@@ -88,24 +88,7 @@ func main() {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	// 6. Background periodic state auto-saver (every 30 seconds)
-	saverCtx, saverCancel := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-saverCtx.Done():
-				return
-			case <-ticker.C:
-				if err := s.SaveToFile(); err != nil {
-					logger.Warn("Periodic state save failed: %v", err)
-				}
-			}
-		}
-	}()
-
-	// 7. Start HTTP Server
+	// 6. Start HTTP Server
 	go func() {
 		logger.Info("OpenBoy REST & SSE Engine listening on http://localhost:%d", *port)
 		logger.Info("SSE Event Stream accessible at http://localhost:%d/api/stream", *port)
@@ -122,9 +105,6 @@ func main() {
 	sig := <-sigChan
 	logger.Warn("Received shutdown signal: %v. Initiating graceful shutdown...", sig)
 
-	// Stop periodic saver
-	saverCancel()
-
 	// Stop scheduler (no new jobs queued)
 	scheduler.Stop()
 
@@ -137,13 +117,6 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown timeout: %v, forcing close", err)
 		_ = server.Close()
-	}
-
-	// Final state flush to disk
-	if err := s.SaveToFile(); err != nil {
-		logger.Error("Failed to save final state on shutdown: %v", err)
-	} else {
-		logger.Info("Successfully persisted final state snapshot to %s", dataFile)
 	}
 
 	logger.Info("OpenBoy Engine terminated gracefully. Goodbye!")

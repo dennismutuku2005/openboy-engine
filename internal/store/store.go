@@ -1,10 +1,7 @@
 package store
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -84,14 +81,19 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 				s.totalLatency += m.TotalPings * m.LastLatency
 			}
 		}
-	}
-
-	if len(s.monitors) == 0 {
-		if err := s.loadFromFile(); err != nil {
-			logger.Info("Starting with clean empty monitors state (file: %s)", dataFile)
-		} else {
-			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents from %s",
-				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), dataFile)
+		if batchers, err := s.mysql.LoadBatchers(); err == nil && len(batchers) > 0 {
+			logger.Info("Loaded %d batchers directly from MySQL database", len(batchers))
+			for _, b := range batchers {
+				copyB := b
+				s.batchers[b.ID] = &copyB
+			}
+		}
+		if incidents, err := s.mysql.LoadIncidents(); err == nil && len(incidents) > 0 {
+			logger.Info("Loaded %d incidents directly from MySQL database", len(incidents))
+			for _, inc := range incidents {
+				copyInc := inc
+				s.incidents[inc.ID] = &copyInc
+			}
 		}
 	}
 
@@ -139,94 +141,12 @@ func (s *Store) bootstrapUsers() {
 }
 
 func (s *Store) loadFromFile() error {
-	if s.filePath == "" {
-		return fmt.Errorf("no file path provided")
-	}
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		return err
-	}
-
-	var state persistedState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, u := range state.Users {
-		copyU := u
-		s.users[u.ID] = &copyU
-	}
-	for _, m := range state.Monitors {
-		if strings.Contains(m.URL, "openboy.dev") || strings.Contains(m.URL, ".internal") {
-			continue
-		}
-		copyM := m
-		s.monitors[m.ID] = &copyM
-		s.totalRuns += m.TotalPings
-		s.totalLatency += m.TotalPings * m.LastLatency
-	}
-	for _, b := range state.Batchers {
-		if strings.Contains(b.TargetQueue, "openboy.dev") || strings.Contains(b.TargetQueue, ".internal") {
-			continue
-		}
-		copyB := b
-		s.batchers[b.ID] = &copyB
-	}
-	for _, inc := range state.Incidents {
-		if strings.Contains(inc.URL, "openboy.dev") || strings.Contains(inc.URL, ".internal") {
-			continue
-		}
-		copyInc := inc
-		s.incidents[inc.ID] = &copyInc
-	}
 	return nil
 }
 
-// SaveToFile persists current memory state to disk atomically without execution logs.
+// SaveToFile is a no-op as all data persistence is handled directly by MySQL.
 func (s *Store) SaveToFile() error {
-	if s.filePath == "" {
-		return nil
-	}
-
-	s.mu.RLock()
-	state := persistedState{
-		Users:     make([]models.User, 0, len(s.users)),
-		Monitors:  make([]models.Monitor, 0, len(s.monitors)),
-		Batchers:  make([]models.Batcher, 0, len(s.batchers)),
-		Incidents: make([]models.Incident, 0, len(s.incidents)),
-	}
-	for _, u := range s.users {
-		state.Users = append(state.Users, *u)
-	}
-	for _, m := range s.monitors {
-		state.Monitors = append(state.Monitors, *m)
-	}
-	for _, b := range s.batchers {
-		state.Batchers = append(state.Batchers, *b)
-	}
-	for _, inc := range s.incidents {
-		state.Incidents = append(state.Incidents, *inc)
-	}
-	s.mu.RUnlock()
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	tmpFile := s.filePath + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmpFile, s.filePath)
+	return nil
 }
 
 // ==========================================
@@ -702,6 +622,9 @@ func (s *Store) CreateBatcher(b models.Batcher) models.Batcher {
 	b.LastRunFormatted = "Never"
 
 	s.batchers[b.ID] = &b
+	if s.mysql != nil {
+		go s.mysql.SaveBatcher(b)
+	}
 	return b
 }
 
@@ -717,6 +640,9 @@ func (s *Store) UpdateBatcher(b models.Batcher) bool {
 	b.LastRun = existing.LastRun
 	b.LastRunFormatted = existing.LastRunFormatted
 	s.batchers[b.ID] = &b
+	if s.mysql != nil {
+		go s.mysql.SaveBatcher(b)
+	}
 	return true
 }
 
@@ -729,6 +655,9 @@ func (s *Store) DeleteBatcher(id string) bool {
 		return false
 	}
 	delete(s.batchers, id)
+	if s.mysql != nil {
+		go s.mysql.DeleteBatcher(id)
+	}
 	return true
 }
 
@@ -744,6 +673,9 @@ func (s *Store) TriggerBatcher(id string) (*models.Batcher, bool) {
 	b.LastRun = time.Now()
 	b.LastRunFormatted = "Just now"
 	copyB := *b
+	if s.mysql != nil {
+		go s.mysql.SaveBatcher(copyB)
+	}
 	return &copyB, true
 }
 
@@ -793,6 +725,9 @@ func (s *Store) CreateIncident(inc models.Incident) models.Incident {
 	inc.Duration = "Ongoing"
 
 	s.incidents[inc.ID] = &inc
+	if s.mysql != nil {
+		go s.mysql.SaveIncident(inc)
+	}
 	return inc
 }
 
@@ -808,6 +743,9 @@ func (s *Store) UpdateIncident(inc models.Incident) bool {
 	inc.StartedAt = existing.StartedAt
 	inc.StartedAtStr = existing.StartedAtStr
 	s.incidents[inc.ID] = &inc
+	if s.mysql != nil {
+		go s.mysql.SaveIncident(inc)
+	}
 	return true
 }
 
@@ -825,6 +763,9 @@ func (s *Store) ResolveIncident(id string) (*models.Incident, bool) {
 	inc.ResolvedAt = &now
 	inc.Duration = fmt.Sprintf("%dm", int(now.Sub(inc.StartedAt).Minutes()))
 	copyInc := *inc
+	if s.mysql != nil {
+		go s.mysql.SaveIncident(copyInc)
+	}
 	return &copyInc, true
 }
 
@@ -837,6 +778,9 @@ func (s *Store) DeleteIncident(id string) bool {
 		return false
 	}
 	delete(s.incidents, id)
+	if s.mysql != nil {
+		go s.mysql.DeleteIncident(id)
+	}
 	return true
 }
 
