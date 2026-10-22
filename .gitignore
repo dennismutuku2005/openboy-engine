@@ -1,0 +1,22 @@
+# Compiled binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/openboy-engine
+
+# Go workspace and test binaries
+*.test
+*.out
+/data/*.tmp
+/data/openboy_state.json.tmp
+
+# OS & IDE metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
