@@ -104,55 +104,64 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/auth/password" && r.Method == http.MethodPut:
 		rt.api.auth.RequireAuth(rt.api.UpdatePasswordHandler)(w, r)
 
-	// Health & Telemetry
+	// Health (Public probe)
 	case path == "/api/health" && r.Method == http.MethodGet:
 		rt.api.HealthHandler(w, r)
 
+	// Protected Telemetry & SSE Stream
 	case path == "/api/stats" && r.Method == http.MethodGet:
-		rt.api.StatsHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.StatsHandler)(w, r)
 
 	case path == "/api/stream" && r.Method == http.MethodGet:
 		rt.api.StreamHandler(w, r)
 
-	// Monitors
+	// Protected Monitors
 	case path == "/api/monitors" && r.Method == http.MethodGet:
-		rt.api.ListMonitorsHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.ListMonitorsHandler)(w, r)
 
 	case path == "/api/monitors" && r.Method == http.MethodPost:
-		rt.api.auth.OptionalAuth(rt.api.CreateMonitorHandler)(w, r)
+		rt.api.auth.RequireAuth(rt.api.CreateMonitorHandler)(w, r)
 
 	case strings.HasPrefix(path, "/api/monitors/"):
-		rt.routeMonitorSubpath(w, r, path[len("/api/monitors/"):])
+		rt.api.auth.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+			rt.routeMonitorSubpath(w, r, path[len("/api/monitors/"):])
+		})(w, r)
 
-	// Executions
+	// Protected Executions
 	case path == "/api/executions" && r.Method == http.MethodGet:
-		rt.api.ListExecutionsHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.ListExecutionsHandler)(w, r)
 
 	case path == "/api/executions" && r.Method == http.MethodDelete:
-		rt.api.ClearExecutionsHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.ClearExecutionsHandler)(w, r)
 
 	case strings.HasPrefix(path, "/api/executions/"):
-		rt.routeExecutionSubpath(w, r, path[len("/api/executions/"):])
+		rt.api.auth.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+			rt.routeExecutionSubpath(w, r, path[len("/api/executions/"):])
+		})(w, r)
 
-	// Batchers
+	// Protected Batchers
 	case path == "/api/batchers" && r.Method == http.MethodGet:
-		rt.api.ListBatchersHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.ListBatchersHandler)(w, r)
 
 	case path == "/api/batchers" && r.Method == http.MethodPost:
-		rt.api.CreateBatcherHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.CreateBatcherHandler)(w, r)
 
 	case strings.HasPrefix(path, "/api/batchers/"):
-		rt.routeBatcherSubpath(w, r, path[len("/api/batchers/"):])
+		rt.api.auth.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+			rt.routeBatcherSubpath(w, r, path[len("/api/batchers/"):])
+		})(w, r)
 
-	// Incidents
+	// Protected Incidents
 	case path == "/api/incidents" && r.Method == http.MethodGet:
-		rt.api.ListIncidentsHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.ListIncidentsHandler)(w, r)
 
 	case path == "/api/incidents" && r.Method == http.MethodPost:
-		rt.api.CreateIncidentHandler(w, r)
+		rt.api.auth.RequireAuth(rt.api.CreateIncidentHandler)(w, r)
 
 	case strings.HasPrefix(path, "/api/incidents/"):
-		rt.routeIncidentSubpath(w, r, path[len("/api/incidents/"):])
+		rt.api.auth.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+			rt.routeIncidentSubpath(w, r, path[len("/api/incidents/"):])
+		})(w, r)
 
 	default:
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Route not found: %s %s", r.Method, path))

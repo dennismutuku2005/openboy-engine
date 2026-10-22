@@ -101,12 +101,45 @@ func TestMonitorsAPI(t *testing.T) {
 	server, _ := setupTestServer()
 	defer server.Close()
 
-	// List monitors
-	resp, err := http.Get(server.URL + "/api/monitors")
+	// 1. Unauthenticated request should be rejected with 401 Unauthorized
+	unauthResp, err := http.Get(server.URL + "/api/monitors")
 	if err != nil {
 		t.Fatalf("Failed GET /api/monitors: %v", err)
 	}
+	defer unauthResp.Body.Close()
+
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 Unauthorized without JWT, got %d", unauthResp.StatusCode)
+	}
+
+	// 2. Obtain valid JWT token via login
+	loginBody, _ := json.Marshal(map[string]string{
+		"username": "admin",
+		"password": "admin",
+	})
+	loginResp, err := http.Post(server.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("Failed login: %v", err)
+	}
+	defer loginResp.Body.Close()
+
+	var authData models.LoginResponse
+	json.NewDecoder(loginResp.Body).Decode(&authData)
+	token := authData.Token
+	client := &http.Client{}
+
+	// 3. Authorized request with Bearer token
+	req, _ := http.NewRequest("GET", server.URL+"/api/monitors", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed GET /api/monitors with auth: %v", err)
+	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 OK with JWT, got %d", resp.StatusCode)
+	}
 
 	var monitors []models.Monitor
 	json.NewDecoder(resp.Body).Decode(&monitors)
@@ -116,8 +149,10 @@ func TestMonitorsAPI(t *testing.T) {
 
 	firstID := monitors[0].ID
 
-	// Ping monitor
-	pingResp, err := http.Post(server.URL+"/api/monitors/"+firstID+"/ping", "application/json", nil)
+	// Ping monitor with Bearer token
+	pingReq, _ := http.NewRequest("POST", server.URL+"/api/monitors/"+firstID+"/ping", nil)
+	pingReq.Header.Set("Authorization", "Bearer "+token)
+	pingResp, err := client.Do(pingReq)
 	if err != nil {
 		t.Fatalf("Failed POST /api/monitors/%s/ping: %v", firstID, err)
 	}
@@ -133,8 +168,10 @@ func TestMonitorsAPI(t *testing.T) {
 		t.Errorf("Ping log monitor ID mismatch: got %s, expected %s", pingLog.MonitorID, firstID)
 	}
 
-	// Toggle monitor
-	toggleResp, err := http.Post(server.URL+"/api/monitors/"+firstID+"/toggle", "application/json", nil)
+	// Toggle monitor with Bearer token
+	toggleReq, _ := http.NewRequest("POST", server.URL+"/api/monitors/"+firstID+"/toggle", nil)
+	toggleReq.Header.Set("Authorization", "Bearer "+token)
+	toggleResp, err := client.Do(toggleReq)
 	if err != nil {
 		t.Fatalf("Failed toggle: %v", err)
 	}

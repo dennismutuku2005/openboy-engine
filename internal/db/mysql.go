@@ -4,13 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"openboy-engine/pkg/logger"
 )
 
-// ConnectMySQL opens a connection pool to MySQL and verifies connectivity.
+// ConnectMySQL opens a connection pool to MySQL, auto-creating the database if needed, and verifies connectivity.
 func ConnectMySQL(dsn string) (*sql.DB, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("empty MySQL DSN provided")
@@ -30,11 +31,57 @@ func ConnectMySQL(dsn string) (*sql.DB, error) {
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
+
+		// If the database doesn't exist, connect to server root and create it!
+		if strings.Contains(strings.ToLower(err.Error()), "unknown database") {
+			baseDSN, dbName := splitDSNDatabase(dsn)
+			if dbName != "" {
+				logger.Info("Database '%s' does not exist yet. Creating database automatically...", dbName)
+				if createErr := createDatabaseIfNotExists(baseDSN, dbName); createErr == nil {
+					// Reconnect to newly created database
+					return sql.Open("mysql", dsn)
+				}
+			}
+		}
 		return nil, fmt.Errorf("failed to ping MySQL server: %w", err)
 	}
 
 	logger.Info("Successfully connected to MySQL database!")
 	return db, nil
+}
+
+func splitDSNDatabase(dsn string) (string, string) {
+	slashIdx := strings.LastIndex(dsn, "/")
+	if slashIdx == -1 {
+		return dsn, ""
+	}
+	afterSlash := dsn[slashIdx+1:]
+	qIdx := strings.Index(afterSlash, "?")
+	var dbName string
+	var params string
+	if qIdx == -1 {
+		dbName = afterSlash
+	} else {
+		dbName = afterSlash[:qIdx]
+		params = afterSlash[qIdx:]
+	}
+	baseDSN := dsn[:slashIdx+1] + params
+	return baseDSN, dbName
+}
+
+func createDatabaseIfNotExists(baseDSN, dbName string) error {
+	rootDB, err := sql.Open("mysql", baseDSN)
+	if err != nil {
+		return err
+	}
+	defer rootDB.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;", dbName)
+	_, err = rootDB.ExecContext(ctx, query)
+	return err
 }
 
 // AutoMigrate creates all necessary tables in MySQL if they do not already exist.
