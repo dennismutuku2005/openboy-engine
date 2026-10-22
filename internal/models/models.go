@@ -181,19 +181,19 @@ type SystemStats struct {
 
 // CreateMonitorRequest represents the payload to create a new monitor.
 type CreateMonitorRequest struct {
-	Name            string            `json:"name"`
-	URL             string            `json:"url"`
-	Method          string            `json:"method"`
-	Interval        string            `json:"interval"`
-	IntervalSeconds int               `json:"intervalSeconds"`
-	IntervalLabel   string            `json:"intervalLabel"`
-	CronExpr        string            `json:"cronExpr,omitempty"`
-	Category        string            `json:"category,omitempty"`
-	Notifications   string            `json:"notifications,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	Body            string            `json:"body,omitempty"`
-	ExpectedStatus  int               `json:"expectedStatus"`
-	Timeout         int               `json:"timeout"`
+	Name            string      `json:"name"`
+	URL             string      `json:"url"`
+	Method          string      `json:"method"`
+	Interval        string      `json:"interval"`
+	IntervalSeconds int         `json:"intervalSeconds"`
+	IntervalLabel   string      `json:"intervalLabel"`
+	CronExpr        string      `json:"cronExpr,omitempty"`
+	Category        string      `json:"category,omitempty"`
+	Notifications   interface{} `json:"notifications,omitempty"`
+	Headers         interface{} `json:"headers,omitempty"`
+	Body            string      `json:"body,omitempty"`
+	ExpectedStatus  int         `json:"expectedStatus"`
+	Timeout         int         `json:"timeout"`
 }
 
 // CreateBatcherRequest represents the payload to create a new batcher.

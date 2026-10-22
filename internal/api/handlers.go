@@ -284,7 +284,7 @@ func (a *API) ListMonitorsHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateMonitorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request payload")
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
 		return
 	}
 
@@ -342,9 +342,47 @@ func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		category = "uptime"
 	}
 
-	notifications := req.Notifications
-	if notifications == "" {
-		notifications = "defaults"
+	notifications := "defaults"
+	switch v := req.Notifications.(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			notifications = v
+		}
+	case []interface{}:
+		var list []string
+		for _, item := range v {
+			if str, ok := item.(string); ok && str != "" {
+				list = append(list, str)
+			}
+		}
+		if len(list) > 0 {
+			notifications = strings.Join(list, ",")
+		}
+	}
+
+	headersMap := make(map[string]string)
+	switch v := req.Headers.(type) {
+	case map[string]interface{}:
+		for k, val := range v {
+			headersMap[k] = fmt.Sprintf("%v", val)
+		}
+	case map[string]string:
+		headersMap = v
+	case string:
+		if strings.TrimSpace(v) != "" {
+			var parsed map[string]string
+			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+				headersMap = parsed
+			} else {
+				lines := strings.Split(v, "\n")
+				for _, line := range lines {
+					parts := strings.SplitN(line, ":", 2)
+					if len(parts) == 2 {
+						headersMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+					}
+				}
+			}
+		}
 	}
 
 	userID := ""
@@ -364,7 +402,7 @@ func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		Status:          "active",
 		Category:        category,
 		Notifications:   notifications,
-		Headers:         req.Headers,
+		Headers:         headersMap,
 		Body:            req.Body,
 		ExpectedStatus:  expectedStatus,
 		Timeout:         timeout,
