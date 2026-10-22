@@ -1,0 +1,90 @@
+name: OpenBoy Engine CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Unit & Integration Tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload Test Coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-coverage
+          path: coverage.out
+          retention-days: 7
+
+  build:
+    name: Build Binaries (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: openboy-engine-linux-amd64
+          - goos: windows
+            goarch: amd64
+            output: openboy-engine-windows-amd64.exe
+          - goos: darwin
+            goarch: amd64
+            output: openboy-engine-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: openboy-engine-darwin-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Compile Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p bin
+          go build -ldflags="-s -w" -o bin/${{ matrix.output }} ./cmd/openboy-engine/main.go
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: bin/${{ matrix.output }}
+          retention-days: 14
