@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"openboy-engine/internal/api"
+	"openboy-engine/internal/db"
 	"openboy-engine/internal/engine"
 	"openboy-engine/internal/store"
 	"openboy-engine/pkg/logger"
@@ -28,20 +29,37 @@ const banner = `
 `
 
 func main() {
+	defaultMySQL := os.Getenv("MYSQL_DSN")
 	port := flag.Int("port", 8080, "HTTP REST & SSE API port")
 	workers := flag.Int("workers", 15, "Number of concurrent probe worker goroutines")
 	dataDir := flag.String("data-dir", "./data", "Directory path for persistent JSON state snapshots")
+	mysqlDSN := flag.String("mysql", defaultMySQL, "MySQL DSN connection string (e.g. root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true)")
 	flag.Parse()
 
 	fmt.Print(banner)
 
 	dataFile := filepath.Join(*dataDir, "openboy_state.json")
 	logger.Info("Bootstrapping OpenBoy Engine...")
-	logger.Info("State persistence file: %s", dataFile)
 	logger.Info("Configured worker pool concurrency: %d", *workers)
 
-	// 1. Initialize Store
-	s := store.NewStore(dataFile)
+	// 1. Initialize MySQL or File Store
+	var mysqlSync *store.MySQLSync
+	if *mysqlDSN != "" {
+		logger.Info("Connecting to MySQL database: %s", *mysqlDSN)
+		sqlDB, err := db.ConnectMySQL(*mysqlDSN)
+		if err != nil {
+			logger.Warn("Could not connect to MySQL (%v). Falling back to JSON state store: %s", err, dataFile)
+		} else {
+			if err := db.AutoMigrate(sqlDB); err != nil {
+				logger.Warn("MySQL auto-migration failed: %v", err)
+			}
+			mysqlSync = store.NewMySQLSync(sqlDB)
+		}
+	} else {
+		logger.Info("No -mysql DSN provided. Using local state file: %s (Pass -mysql \"user:pass@tcp(host:3306)/openboy?parseTime=true\" to connect MySQL)", dataFile)
+	}
+
+	s := store.NewStore(dataFile, mysqlSync)
 
 	// 2. Initialize HTTP Prober
 	prober := engine.NewProber()

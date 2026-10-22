@@ -37,10 +37,11 @@ type Store struct {
 	totalLatency int64
 	subscribers  map[chan models.ExecutionLog]struct{}
 	subMu        sync.RWMutex
+	mysql        *MySQLSync
 }
 
-// NewStore initializes a store, loading from data/openboy_state.json if available.
-func NewStore(dataFile string) *Store {
+// NewStore initializes a store, loading from MySQL if connected or data/openboy_state.json if available.
+func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 	s := &Store{
 		users:       make(map[string]*models.User),
 		monitors:    make(map[string]*models.Monitor),
@@ -53,16 +54,35 @@ func NewStore(dataFile string) *Store {
 		subscribers: make(map[chan models.ExecutionLog]struct{}),
 	}
 
-	if err := s.loadFromFile(); err != nil {
-		logger.Warn("Could not load previous state from %s (%v), bootstrapping default seed data", dataFile, err)
-		s.bootstrapSeed()
-	} else {
-		// Ensure default users exist if file had empty users
-		if len(s.users) == 0 {
-			s.bootstrapUsers()
+	if len(mysqlDB) > 0 && mysqlDB[0] != nil {
+		s.mysql = mysqlDB[0]
+		// Seed MySQL if empty and load state directly from MySQL
+		if err := s.mysql.SeedIfEmpty(); err != nil {
+			logger.Warn("Failed to seed MySQL: %v", err)
 		}
-		logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents, %d logs from %s",
-			len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), len(s.logs), dataFile)
+		if mons, err := s.mysql.LoadMonitors(); err == nil && len(mons) > 0 {
+			logger.Info("Loaded %d monitors directly from MySQL database", len(mons))
+			for _, m := range mons {
+				copyM := m
+				s.monitors[m.ID] = &copyM
+				s.totalRuns += m.TotalPings
+				s.totalLatency += m.TotalPings * m.LastLatency
+			}
+		}
+	}
+
+	if len(s.monitors) == 0 {
+		if err := s.loadFromFile(); err != nil {
+			logger.Warn("Could not load previous state from %s (%v), bootstrapping default seed data", dataFile, err)
+			s.bootstrapSeed()
+		} else {
+			// Ensure default users exist if file had empty users
+			if len(s.users) == 0 {
+				s.bootstrapUsers()
+			}
+			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents, %d logs from %s",
+				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), len(s.logs), dataFile)
+		}
 	}
 
 	return s
@@ -259,6 +279,9 @@ func (s *Store) CreateUser(u models.User) (*models.User, error) {
 
 	s.users[u.ID] = &u
 	copyU := u
+	if s.mysql != nil {
+		go s.mysql.SaveUser(copyU)
+	}
 	return &copyU, nil
 }
 
@@ -278,6 +301,10 @@ func (s *Store) UpdateUser(u models.User) bool {
 		existing.Email = u.Email
 	}
 	existing.UpdatedAt = time.Now()
+	copyU := *existing
+	if s.mysql != nil {
+		go s.mysql.SaveUser(copyU)
+	}
 	return true
 }
 
@@ -293,6 +320,10 @@ func (s *Store) UpdatePassword(userID, newHash, newSalt string) bool {
 	user.PasswordHash = newHash
 	user.PasswordSalt = newSalt
 	user.UpdatedAt = time.Now()
+	copyU := *user
+	if s.mysql != nil {
+		go s.mysql.SaveUser(copyU)
+	}
 	return true
 }
 
@@ -344,6 +375,9 @@ func (s *Store) CreateMonitor(m models.Monitor) models.Monitor {
 	m.UpdatedAt = now
 
 	s.monitors[m.ID] = &m
+	if s.mysql != nil {
+		go s.mysql.SaveMonitor(m)
+	}
 	return m
 }
 
@@ -371,6 +405,9 @@ func (s *Store) UpdateMonitor(m models.Monitor) bool {
 	m.UpdatedAt = time.Now()
 
 	s.monitors[m.ID] = &m
+	if s.mysql != nil {
+		go s.mysql.SaveMonitor(m)
+	}
 	return true
 }
 
@@ -383,6 +420,9 @@ func (s *Store) DeleteMonitor(id string) bool {
 		return false
 	}
 	delete(s.monitors, id)
+	if s.mysql != nil {
+		go s.mysql.DeleteMonitor(id)
+	}
 	return true
 }
 
@@ -402,6 +442,9 @@ func (s *Store) ToggleMonitorStatus(id string) (*models.Monitor, bool) {
 	}
 	m.UpdatedAt = time.Now()
 	copyM := *m
+	if s.mysql != nil {
+		go s.mysql.SaveMonitor(copyM)
+	}
 	return &copyM, true
 }
 
@@ -462,6 +505,11 @@ func (s *Store) RecordPingResult(log models.ExecutionLog) {
 
 	// Notify SSE subscribers
 	s.broadcastLog(log)
+
+	// Sync to MySQL
+	if s.mysql != nil {
+		go s.mysql.RecordLog(log)
+	}
 }
 
 // ==========================================

@@ -60,11 +60,18 @@ go build -o bin/openboy-engine.exe ./cmd/openboy-engine/main.go
 
 ### 2. Run the Engine
 ```bash
-# Default port 8080 with 15 concurrent workers:
+# Default port 8080 with 15 concurrent workers (In-memory + JSON snapshot):
 ./bin/openboy-engine.exe
 
-# Custom configuration:
-./bin/openboy-engine.exe -port 8080 -workers 20 -data-dir ./data
+# Connect directly to a live MySQL Database (Auto-migrates tables and queries MySQL):
+./bin/openboy-engine.exe -mysql "root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true"
+
+# Or configure via environment variable:
+export MYSQL_DSN="root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true"
+./bin/openboy-engine.exe
+
+# Custom configuration with workers & data snapshot dir:
+./bin/openboy-engine.exe -port 8080 -workers 20 -data-dir ./data -mysql "root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true"
 ```
 
 ### 3. Run Unit & Integration Tests
