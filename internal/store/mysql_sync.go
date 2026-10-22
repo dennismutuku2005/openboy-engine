@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"openboy-engine/internal/models"
@@ -19,6 +20,21 @@ func NewMySQLSync(db *sql.DB) *MySQLSync {
 		return nil
 	}
 	return &MySQLSync{db: db}
+}
+
+// CleanLegacySeed purges any leftover fake/dummy seeded records (openboy.dev, .internal, etc.) from MySQL.
+func (m *MySQLSync) CleanLegacySeed() error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+
+	logger.Info("Purging legacy seeded/demo monitors and fake logs from MySQL...")
+	_, _ = m.db.Exec(`DELETE FROM execution_logs WHERE url LIKE '%openboy.dev%' OR url LIKE '%.internal%' OR monitor_id IN ('mon-1', 'mon-2', 'mon-3', 'mon-4', 'mon-5', 'mon-6')`)
+	_, _ = m.db.Exec(`DELETE FROM incidents WHERE url LIKE '%openboy.dev%' OR url LIKE '%.internal%' OR id IN ('inc-1', 'inc-2', 'inc-3')`)
+	_, _ = m.db.Exec(`DELETE FROM batchers WHERE target_queue LIKE '%openboy.dev%' OR target_queue LIKE '%.internal%' OR id IN ('batch-1', 'batch-2', 'batch-3', 'batch-4')`)
+	_, _ = m.db.Exec(`DELETE FROM monitors WHERE url LIKE '%openboy.dev%' OR url LIKE '%.internal%' OR id IN ('mon-1', 'mon-2', 'mon-3', 'mon-4', 'mon-5', 'mon-6')`)
+
+	return nil
 }
 
 // SeedIfEmpty checks if users table is empty, and if so seeds default admin users.
@@ -150,7 +166,7 @@ func (m *MySQLSync) RecordLog(log models.ExecutionLog) {
 
 	// 1. Insert log
 	_, err := m.db.Exec(`
-		INSERT INTO execution_logs (id, monitor_id, monitor_name, url, method, status, status_text, latency_ms, timestamp, is_ok, error_message, response_body)
+		INSERT IGNORE INTO execution_logs (id, monitor_id, monitor_name, url, method, status, status_text, latency_ms, timestamp, is_ok, error_message, response_body)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.ID, log.MonitorID, log.MonitorName, log.URL, log.Method, log.Status, log.StatusText, log.Latency, log.Timestamp, log.OK, log.Error, log.ResponseBody,
 	)
@@ -238,4 +254,62 @@ func (m *MySQLSync) LoadUsers() ([]models.User, error) {
 		users = append(users, u)
 	}
 	return users, nil
+}
+
+// GetUserByUsernameOrEmail fetches a user directly from MySQL by username or email.
+func (m *MySQLSync) GetUserByUsernameOrEmail(identifier string) (*models.User, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	var u models.User
+	clean := strings.TrimSpace(identifier)
+	err := m.db.QueryRow(`
+		SELECT id, username, email, password_hash, password_salt, name, role, api_key, created_at, updated_at
+		FROM users
+		WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)
+		LIMIT 1`,
+		clean, clean,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.PasswordSalt, &u.Name, &u.Role, &u.APIKey, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetUserByID fetches a user directly from MySQL by ID.
+func (m *MySQLSync) GetUserByID(id string) (*models.User, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	var u models.User
+	err := m.db.QueryRow(`
+		SELECT id, username, email, password_hash, password_salt, name, role, api_key, created_at, updated_at
+		FROM users
+		WHERE id = ?
+		LIMIT 1`,
+		id,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.PasswordSalt, &u.Name, &u.Role, &u.APIKey, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetUserByAPIKey fetches a user directly from MySQL by API key.
+func (m *MySQLSync) GetUserByAPIKey(apiKey string) (*models.User, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	var u models.User
+	err := m.db.QueryRow(`
+		SELECT id, username, email, password_hash, password_salt, name, role, api_key, created_at, updated_at
+		FROM users
+		WHERE api_key = ?
+		LIMIT 1`,
+		apiKey,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.PasswordSalt, &u.Name, &u.Role, &u.APIKey, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
 }

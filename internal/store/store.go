@@ -56,6 +56,10 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 
 	if len(mysqlDB) > 0 && mysqlDB[0] != nil {
 		s.mysql = mysqlDB[0]
+		// Clean up any legacy seeded/demo monitors and fake logs from MySQL
+		if err := s.mysql.CleanLegacySeed(); err != nil {
+			logger.Warn("Failed to clean legacy seed from MySQL: %v", err)
+		}
 		// Seed MySQL if empty and load state directly from MySQL
 		if err := s.mysql.SeedIfEmpty(); err != nil {
 			logger.Warn("Failed to seed MySQL: %v", err)
@@ -70,6 +74,9 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 		if mons, err := s.mysql.LoadMonitors(); err == nil && len(mons) > 0 {
 			logger.Info("Loaded %d monitors directly from MySQL database", len(mons))
 			for _, m := range mons {
+				if strings.Contains(m.URL, "openboy.dev") || strings.Contains(m.URL, ".internal") {
+					continue
+				}
 				copyM := m
 				s.monitors[m.ID] = &copyM
 				s.totalRuns += m.TotalPings
@@ -80,8 +87,7 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 
 	if len(s.monitors) == 0 {
 		if err := s.loadFromFile(); err != nil {
-			logger.Warn("Could not load previous state from %s (%v), bootstrapping default seed data", dataFile, err)
-			s.bootstrapSeed()
+			logger.Info("Starting with clean empty monitors state (file: %s)", dataFile)
 		} else {
 			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents, %d logs from %s",
 				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), len(s.logs), dataFile)
@@ -153,20 +159,34 @@ func (s *Store) loadFromFile() error {
 		s.users[u.ID] = &copyU
 	}
 	for _, m := range state.Monitors {
+		if strings.Contains(m.URL, "openboy.dev") || strings.Contains(m.URL, ".internal") {
+			continue
+		}
 		copyM := m
 		s.monitors[m.ID] = &copyM
 		s.totalRuns += m.TotalPings
 		s.totalLatency += m.TotalPings * m.LastLatency
 	}
 	for _, b := range state.Batchers {
+		if strings.Contains(b.TargetQueue, "openboy.dev") || strings.Contains(b.TargetQueue, ".internal") {
+			continue
+		}
 		copyB := b
 		s.batchers[b.ID] = &copyB
 	}
 	for _, inc := range state.Incidents {
+		if strings.Contains(inc.URL, "openboy.dev") || strings.Contains(inc.URL, ".internal") {
+			continue
+		}
 		copyInc := inc
 		s.incidents[inc.ID] = &copyInc
 	}
-	s.logs = state.Logs
+	for _, l := range state.Logs {
+		if strings.Contains(l.URL, "openboy.dev") || strings.Contains(l.URL, ".internal") {
+			continue
+		}
+		s.logs = append(s.logs, l)
+	}
 	return nil
 }
 
@@ -221,6 +241,15 @@ func (s *Store) SaveToFile() error {
 
 // GetUserByID retrieves a user by ID.
 func (s *Store) GetUserByID(id string) (*models.User, bool) {
+	if s.mysql != nil {
+		if u, err := s.mysql.GetUserByID(id); err == nil && u != nil {
+			s.mu.Lock()
+			s.users[u.ID] = u
+			s.mu.Unlock()
+			return u, true
+		}
+	}
+
 	s.mu.RLock()
 	if len(s.users) == 0 {
 		s.mu.RUnlock()
@@ -239,6 +268,15 @@ func (s *Store) GetUserByID(id string) (*models.User, bool) {
 
 // GetUserByUsernameOrEmail finds a user by username or email (case-insensitive).
 func (s *Store) GetUserByUsernameOrEmail(identifier string) (*models.User, bool) {
+	if s.mysql != nil {
+		if u, err := s.mysql.GetUserByUsernameOrEmail(identifier); err == nil && u != nil {
+			s.mu.Lock()
+			s.users[u.ID] = u
+			s.mu.Unlock()
+			return u, true
+		}
+	}
+
 	s.mu.RLock()
 	if len(s.users) == 0 {
 		s.mu.RUnlock()
@@ -259,6 +297,15 @@ func (s *Store) GetUserByUsernameOrEmail(identifier string) (*models.User, bool)
 
 // GetUserByAPIKey finds a user by API key.
 func (s *Store) GetUserByAPIKey(key string) (*models.User, bool) {
+	if s.mysql != nil {
+		if u, err := s.mysql.GetUserByAPIKey(key); err == nil && u != nil {
+			s.mu.Lock()
+			s.users[u.ID] = u
+			s.mu.Unlock()
+			return u, true
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

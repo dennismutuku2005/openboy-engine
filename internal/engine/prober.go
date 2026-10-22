@@ -7,10 +7,18 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"openboy-engine/internal/models"
 )
+
+var logCounter uint64
+
+func nextLogID() string {
+	seq := atomic.AddUint64(&logCounter, 1)
+	return fmt.Sprintf("log-%d-%d", time.Now().UnixNano(), seq)
+}
 
 // Prober executes HTTP health checks and measures performance metrics.
 type Prober struct {
@@ -95,7 +103,7 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 		}
 
 		return models.ExecutionLog{
-			ID:            fmt.Sprintf("log-%d", time.Now().UnixNano()),
+			ID:            nextLogID(),
 			MonitorID:     m.ID,
 			MonitorName:   m.Name,
 			URL:           m.URL,
@@ -122,7 +130,7 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 	isOK := resp.StatusCode == expected
 
 	return models.ExecutionLog{
-		ID:            fmt.Sprintf("log-%d", time.Now().UnixNano()),
+		ID:            nextLogID(),
 		MonitorID:     m.ID,
 		MonitorName:   m.Name,
 		URL:           m.URL,

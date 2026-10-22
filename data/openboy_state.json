@@ -1,0 +1,28 @@
+{
+  "users": [
+    {
+      "id": "usr-1",
+      "username": "dennismuuo",
+      "email": "admin@openboy.dev",
+      "name": "Dennis Mutuku",
+      "role": "admin",
+      "apiKey": "ob_live_8f99e3a07c1264b91",
+      "createdAt": "2026-10-19T16:15:14Z",
+      "updatedAt": "2026-10-22T16:15:14Z"
+    },
+    {
+      "id": "usr-2",
+      "username": "admin",
+      "email": "operator@openboy.dev",
+      "name": "System Administrator",
+      "role": "admin",
+      "apiKey": "ob_live_1a2b3c4d5e6f7g8h9",
+      "createdAt": "2026-10-20T16:15:14Z",
+      "updatedAt": "2026-10-22T16:15:14Z"
+    }
+  ],
+  "monitors": [],
+  "batchers": [],
+  "incidents": [],
+  "logs": []
+}
