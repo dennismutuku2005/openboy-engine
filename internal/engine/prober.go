@@ -5,9 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -39,7 +37,7 @@ func NewProber() *Prober {
 	}
 }
 
-// Probe executes the health check for the given monitor.
+// Probe executes a real network health check for the given monitor.
 func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionLog {
 	start := time.Now()
 
@@ -49,17 +47,6 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	parsedURL, err := url.Parse(m.URL)
-	isInternalDemo := err != nil ||
-		strings.HasSuffix(parsedURL.Hostname(), ".internal") ||
-		strings.HasSuffix(parsedURL.Hostname(), ".openboy.dev") ||
-		strings.HasSuffix(parsedURL.Hostname(), ".example.com")
-
-	// If this is an internal mock/demo domain, produce realistic simulated execution
-	if isInternalDemo {
-		return p.simulateProbe(m, start)
-	}
 
 	// Real network probe
 	var bodyReader io.Reader
@@ -98,6 +85,15 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
+		statusText := "Connection Error"
+		if strings.Contains(err.Error(), "no such host") {
+			statusText = "DNS NXDOMAIN (Host Not Found)"
+		} else if strings.Contains(err.Error(), "connection refused") {
+			statusText = "Connection Refused"
+		} else if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
+			statusText = "Request Timeout"
+		}
+
 		return models.ExecutionLog{
 			ID:            fmt.Sprintf("log-%d", time.Now().UnixNano()),
 			MonitorID:     m.ID,
@@ -105,7 +101,7 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 			URL:           m.URL,
 			Method:        m.Method,
 			Status:        0,
-			StatusText:    "Connection Error",
+			StatusText:    statusText,
 			Latency:       latency,
 			Timestamp:     start,
 			FormattedTime: start.Format("15:04:05"),
@@ -138,71 +134,5 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 		FormattedTime: start.Format("15:04:05"),
 		OK:            isOK,
 		ResponseBody:  bodySnippet,
-	}
-}
-
-func (p *Prober) simulateProbe(m *models.Monitor, start time.Time) models.ExecutionLog {
-	// Specific deterministic failing scenario for demo monitor "mon-4"
-	if m.ID == "mon-4" {
-		latency := int64(2400 + rand.Intn(600))
-		time.Sleep(time.Duration(15+rand.Intn(20)) * time.Millisecond) // micro sleep
-		return models.ExecutionLog{
-			ID:            fmt.Sprintf("log-%d", time.Now().UnixNano()),
-			MonitorID:     m.ID,
-			MonitorName:   m.Name,
-			URL:           m.URL,
-			Method:        m.Method,
-			Status:        503,
-			StatusText:    "Service Unavailable",
-			Latency:       latency,
-			Timestamp:     start,
-			FormattedTime: start.Format("15:04:05"),
-			OK:            false,
-			Error:         "Database connection pool exhausted (max_connections: 100)",
-		}
-	}
-
-	// 99.5% success rate for healthy demo monitors
-	isError := rand.Float64() < 0.005
-	var latency int64
-	var status int
-	var statusText string
-	var errMsg string
-
-	if isError {
-		status = 502
-		statusText = "Bad Gateway"
-		latency = int64(600 + rand.Intn(400))
-		errMsg = "Upstream proxy received invalid response"
-	} else {
-		status = m.ExpectedStatus
-		if status <= 0 {
-			status = 200
-		}
-		statusText = http.StatusText(status)
-		// Realistic latency based on category
-		if strings.Contains(m.URL, "/health") || strings.Contains(m.URL, "/ping") {
-			latency = int64(12 + rand.Intn(30))
-		} else {
-			latency = int64(45 + rand.Intn(95))
-		}
-	}
-
-	time.Sleep(time.Duration(10+rand.Intn(15)) * time.Millisecond)
-
-	return models.ExecutionLog{
-		ID:            fmt.Sprintf("log-%d", time.Now().UnixNano()),
-		MonitorID:     m.ID,
-		MonitorName:   m.Name,
-		URL:           m.URL,
-		Method:        m.Method,
-		Status:        status,
-		StatusText:    statusText,
-		Latency:       latency,
-		Timestamp:     start,
-		FormattedTime: start.Format("15:04:05"),
-		OK:            !isError,
-		Error:         errMsg,
-		ResponseBody:  `{"status":"healthy","engine":"openboy-go","region":"us-east-1"}`,
 	}
 }

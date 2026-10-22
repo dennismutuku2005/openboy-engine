@@ -10,15 +10,10 @@ import (
 func TestStoreOperations(t *testing.T) {
 	s := NewStore("") // in-memory only (no file persistence)
 
-	// 1. Verify Seeded Monitors & Stats
-	monitors := s.GetAllMonitors()
-	if len(monitors) == 0 {
-		t.Fatalf("Expected seeded monitors, got 0")
-	}
-
-	stats := s.GetSystemStats(0)
-	if stats.TotalMonitors != len(monitors) {
-		t.Errorf("Stats TotalMonitors mismatch: got %d, expected %d", stats.TotalMonitors, len(monitors))
+	// 1. Verify Default Admin User
+	adminUser, ok := s.GetUserByUsernameOrEmail("admin")
+	if !ok || adminUser.Username != "admin" {
+		t.Fatalf("Expected default admin user to exist")
 	}
 
 	// 2. Monitor CRUD
@@ -81,22 +76,25 @@ func TestStoreOperations(t *testing.T) {
 	}
 
 	// 4. Batchers
-	batchers := s.GetAllBatchers()
-	if len(batchers) == 0 {
-		t.Fatalf("Expected default batchers, got 0")
-	}
-
-	triggered, ok := s.TriggerBatcher(batchers[0].ID)
+	testBatcher := s.CreateBatcher(models.Batcher{
+		Name:     "Test Batch Worker",
+		JobKey:   "test_job",
+		Schedule: "Every 10m",
+		Status:   "active",
+	})
+	triggered, ok := s.TriggerBatcher(testBatcher.ID)
 	if !ok || triggered.LastRunFormatted != "Just now" {
 		t.Errorf("Batcher trigger failed: %+v", triggered)
 	}
 
 	// 5. Incidents
-	incidents := s.GetAllIncidents()
-	if len(incidents) == 0 {
-		t.Fatalf("Expected default incidents, got 0")
-	}
-	resolved, ok := s.ResolveIncident(incidents[0].ID)
+	testIncident := s.CreateIncident(models.Incident{
+		Title:    "Test Outage Incident",
+		Service:  "Test Service",
+		Severity: "P2 - High",
+		Status:   "investigating",
+	})
+	resolved, ok := s.ResolveIncident(testIncident.ID)
 	if !ok || resolved.Status != "resolved" {
 		t.Errorf("Incident resolve failed: %+v", resolved)
 	}

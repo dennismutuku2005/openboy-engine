@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"openboy-engine/internal/engine"
@@ -143,11 +144,23 @@ func TestMonitorsAPI(t *testing.T) {
 
 	var monitors []models.Monitor
 	json.NewDecoder(resp.Body).Decode(&monitors)
-	if len(monitors) == 0 {
-		t.Fatalf("Expected seeded monitors list to not be empty")
-	}
 
-	firstID := monitors[0].ID
+	var firstID string
+	if len(monitors) == 0 {
+		createReq, _ := http.NewRequest("POST", server.URL+"/api/monitors", strings.NewReader(`{"name":"Test API","url":"https://api.github.com","method":"GET","intervalSeconds":30}`))
+		createReq.Header.Set("Authorization", "Bearer "+token)
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp, err := client.Do(createReq)
+		if err != nil {
+			t.Fatalf("Failed to create monitor: %v", err)
+		}
+		var created models.Monitor
+		json.NewDecoder(createResp.Body).Decode(&created)
+		createResp.Body.Close()
+		firstID = created.ID
+	} else {
+		firstID = monitors[0].ID
+	}
 
 	// Ping monitor with Bearer token
 	pingReq, _ := http.NewRequest("POST", server.URL+"/api/monitors/"+firstID+"/ping", nil)

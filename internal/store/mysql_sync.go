@@ -21,39 +21,12 @@ func NewMySQLSync(db *sql.DB) *MySQLSync {
 	return &MySQLSync{db: db}
 }
 
-// SeedIfEmpty checks if tables are empty, and if so seeds default monitors, batchers, users.
+// SeedIfEmpty checks if users table is empty, and if so seeds default admin users.
 func (m *MySQLSync) SeedIfEmpty() error {
-	var monitorCount int
-	err := m.db.QueryRow("SELECT COUNT(*) FROM monitors").Scan(&monitorCount)
-	if err != nil {
-		return err
-	}
-
-	if monitorCount == 0 {
-		logger.Info("MySQL monitors table is empty. Seeding initial starter monitors...")
-		for _, mon := range getDefaultMonitors() {
-			_, err := m.db.Exec(`
-				INSERT INTO monitors (
-					id, user_id, name, url, method, interval_val, interval_seconds, interval_label,
-					status, category, notifications, expected_status, timeout_sec, last_status,
-					last_latency_ms, last_checked_at, uptime_pct, total_pings, failed_pings,
-					consecutive_fails, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				mon.ID, mon.UserID, mon.Name, mon.URL, mon.Method, mon.Interval, mon.IntervalSeconds, mon.IntervalLabel,
-				mon.Status, mon.Category, mon.Notifications, mon.ExpectedStatus, mon.Timeout, mon.LastStatus,
-				mon.LastLatency, mon.LastChecked, mon.Uptime, mon.TotalPings, mon.FailedPings,
-				mon.ConsecutiveFails, mon.CreatedAt, mon.UpdatedAt,
-			)
-			if err != nil {
-				logger.Warn("Failed to seed monitor %s: %v", mon.ID, err)
-			}
-		}
-	}
-
 	var userCount int
-	err = m.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount)
+	err := m.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount)
 	if err == nil && userCount == 0 {
-		logger.Info("MySQL users table is empty. Seeding initial default users...")
+		logger.Info("MySQL users table is empty. Seeding initial default operator users...")
 		for _, u := range getDefaultUsers() {
 			_, err := m.db.Exec(`
 				INSERT INTO users (id, username, email, password_hash, password_salt, name, role, api_key, created_at, updated_at)
@@ -63,30 +36,6 @@ func (m *MySQLSync) SeedIfEmpty() error {
 			if err != nil {
 				logger.Warn("Failed to seed user %s: %v", u.Username, err)
 			}
-		}
-	}
-
-	var batcherCount int
-	err = m.db.QueryRow("SELECT COUNT(*) FROM batchers").Scan(&batcherCount)
-	if err == nil && batcherCount == 0 {
-		for _, b := range getDefaultBatchers() {
-			m.db.Exec(`
-				INSERT INTO batchers (id, name, job_key, schedule, cron_expr, status, concurrency, last_run, duration, records_processed, target_queue, description)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				b.ID, b.Name, b.JobKey, b.Schedule, b.CronExpr, b.Status, b.Concurrency, b.LastRun, b.Duration, b.RecordsProcessed, b.TargetQueue, b.Description,
-			)
-		}
-	}
-
-	var incidentCount int
-	err = m.db.QueryRow("SELECT COUNT(*) FROM incidents").Scan(&incidentCount)
-	if err == nil && incidentCount == 0 {
-		for _, inc := range getDefaultIncidents() {
-			m.db.Exec(`
-				INSERT INTO incidents (id, monitor_id, title, service, url, severity, status, started_at, duration, cause)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				inc.ID, inc.MonitorID, inc.Title, inc.Service, inc.URL, inc.Severity, inc.Status, inc.StartedAt, inc.Duration, inc.Cause,
-			)
 		}
 	}
 
