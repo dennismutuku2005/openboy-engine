@@ -15,11 +15,10 @@ import (
 )
 
 type persistedState struct {
-	Users     []models.User         `json:"users"`
-	Monitors  []models.Monitor      `json:"monitors"`
-	Batchers  []models.Batcher      `json:"batchers"`
-	Incidents []models.Incident     `json:"incidents"`
-	Logs      []models.ExecutionLog `json:"logs"`
+	Users     []models.User     `json:"users"`
+	Monitors  []models.Monitor  `json:"monitors"`
+	Batchers  []models.Batcher  `json:"batchers"`
+	Incidents []models.Incident `json:"incidents"`
 }
 
 // Store provides thread-safe access to users, monitors, batchers, incidents, and logs.
@@ -89,8 +88,8 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 		if err := s.loadFromFile(); err != nil {
 			logger.Info("Starting with clean empty monitors state (file: %s)", dataFile)
 		} else {
-			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents, %d logs from %s",
-				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), len(s.logs), dataFile)
+			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents from %s",
+				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), dataFile)
 		}
 	}
 
@@ -181,16 +180,10 @@ func (s *Store) loadFromFile() error {
 		copyInc := inc
 		s.incidents[inc.ID] = &copyInc
 	}
-	for _, l := range state.Logs {
-		if strings.Contains(l.URL, "openboy.dev") || strings.Contains(l.URL, ".internal") {
-			continue
-		}
-		s.logs = append(s.logs, l)
-	}
 	return nil
 }
 
-// SaveToFile persists current memory state to disk atomically.
+// SaveToFile persists current memory state to disk atomically without execution logs.
 func (s *Store) SaveToFile() error {
 	if s.filePath == "" {
 		return nil
@@ -202,7 +195,6 @@ func (s *Store) SaveToFile() error {
 		Monitors:  make([]models.Monitor, 0, len(s.monitors)),
 		Batchers:  make([]models.Batcher, 0, len(s.batchers)),
 		Incidents: make([]models.Incident, 0, len(s.incidents)),
-		Logs:      s.logs,
 	}
 	for _, u := range s.users {
 		state.Users = append(state.Users, *u)

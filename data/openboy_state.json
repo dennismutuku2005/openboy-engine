@@ -21,8 +21,65 @@
       "updatedAt": "2026-10-22T16:15:14Z"
     }
   ],
-  "monitors": [],
+  "monitors": [
+    {
+      "id": "mon-1792692548328772300",
+      "userId": "usr-1",
+      "name": "waaaas",
+      "url": "https://speednet.pacewisp.co.ke/login",
+      "method": "GET",
+      "interval": "10s",
+      "intervalSeconds": 10,
+      "intervalLabel": "Every 10 seconds",
+      "status": "paused",
+      "category": "uptime",
+      "notifications": "defaults",
+      "expectedStatus": 200,
+      "timeout": 10,
+      "lastStatus": 200,
+      "lastLatency": 607,
+      "lastChecked": "2026-10-22T21:21:09.9895928+03:00",
+      "lastCheckedStr": "Just now",
+      "uptime": "100.00%",
+      "totalPings": 48,
+      "failedPings": 0,
+      "consecutiveFails": 0,
+      "history": [
+        {
+          "status": 200,
+          "latency": 607,
+          "time": "Just now",
+          "ok": true
+        },
+        {
+          "status": 200,
+          "latency": 183,
+          "time": "Just now",
+          "ok": true
+        },
+        {
+          "status": 200,
+          "latency": 193,
+          "time": "Just now",
+          "ok": true
+        },
+        {
+          "status": 200,
+          "latency": 184,
+          "time": "Just now",
+          "ok": true
+        },
+        {
+          "status": 200,
+          "latency": 183,
+          "time": "Just now",
+          "ok": true
+        }
+      ],
+      "createdAt": "2026-10-22T21:09:08.3287723+03:00",
+      "updatedAt": "2026-10-22T21:21:09.9895928+03:00"
+    }
+  ],
   "batchers": [],
-  "incidents": [],
-  "logs": []
+  "incidents": []
 }
