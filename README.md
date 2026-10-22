@@ -1,6 +1,5 @@
 <div align="center">
-  <img src="assets/logos/openboy.png" alt="OpenBoy Logo" width="280" />
-  <h1>OpenBoy Engine</h1>
+  <img src="assets/logos/openboy.png" alt="OpenBoy Logo" width="380" />
   <p>High-Performance Health Probe Orchestrator, Queue Batcher & REST/SSE API</p>
 </div>
 
