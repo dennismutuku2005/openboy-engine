@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"openboy-engine/internal/engine"
 	"openboy-engine/internal/models"
@@ -67,8 +68,14 @@ func (a *API) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := user.ID
+	if userID == "" {
+		userID = fmt.Sprintf("usr-%d", time.Now().Unix())
+		user.ID = userID
+	}
+
 	token, err := auth.GenerateToken(auth.Claims{
-		UserID:   user.ID,
+		UserID:   userID,
 		Username: user.Username,
 		Email:    user.Email,
 		Name:     user.Name,

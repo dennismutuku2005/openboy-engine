@@ -32,9 +32,24 @@ func (am *AuthMiddleware) Authenticate(r *http.Request) (*models.User, error) {
 		tokenStr := strings.TrimSpace(authHeader[7:])
 		claims, err := auth.ValidateToken(tokenStr)
 		if err == nil && claims != nil {
-			if user, ok := am.store.GetUserByID(claims.UserID); ok {
-				return user, nil
+			if claims.UserID != "" {
+				if user, ok := am.store.GetUserByID(claims.UserID); ok {
+					return user, nil
+				}
 			}
+			if claims.Username != "" {
+				if user, ok := am.store.GetUserByUsernameOrEmail(claims.Username); ok {
+					return user, nil
+				}
+			}
+			// Cryptographically verified JWT token
+			return &models.User{
+				ID:       claims.UserID,
+				Username: claims.Username,
+				Email:    claims.Email,
+				Name:     claims.Name,
+				Role:     claims.Role,
+			}, nil
 		}
 	}
 
