@@ -102,6 +102,9 @@ func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 		}
 		result = append(result, mon)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -252,6 +255,9 @@ func (m *MySQLSync) LoadUsers() ([]models.User, error) {
 			continue
 		}
 		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return users, nil
 }
