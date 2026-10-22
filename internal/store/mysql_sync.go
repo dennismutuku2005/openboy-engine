@@ -268,3 +268,25 @@ func (m *MySQLSync) SaveUser(u models.User) {
 		logger.Warn("Failed to persist user %s to MySQL: %v", u.Username, err)
 	}
 }
+
+// LoadUsers fetches all users from MySQL.
+func (m *MySQLSync) LoadUsers() ([]models.User, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	rows, err := m.db.Query("SELECT id, username, email, password_hash, password_salt, name, role, api_key, created_at, updated_at FROM users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var u models.User
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.PasswordSalt, &u.Name, &u.Role, &u.APIKey, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			continue
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}

@@ -60,6 +60,13 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 		if err := s.mysql.SeedIfEmpty(); err != nil {
 			logger.Warn("Failed to seed MySQL: %v", err)
 		}
+		if users, err := s.mysql.LoadUsers(); err == nil && len(users) > 0 {
+			logger.Info("Loaded %d users directly from MySQL database", len(users))
+			for _, u := range users {
+				copyU := u
+				s.users[u.ID] = &copyU
+			}
+		}
 		if mons, err := s.mysql.LoadMonitors(); err == nil && len(mons) > 0 {
 			logger.Info("Loaded %d monitors directly from MySQL database", len(mons))
 			for _, m := range mons {
@@ -76,13 +83,14 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 			logger.Warn("Could not load previous state from %s (%v), bootstrapping default seed data", dataFile, err)
 			s.bootstrapSeed()
 		} else {
-			// Ensure default users exist if file had empty users
-			if len(s.users) == 0 {
-				s.bootstrapUsers()
-			}
 			logger.Info("Loaded state: %d users, %d monitors, %d batchers, %d incidents, %d logs from %s",
 				len(s.users), len(s.monitors), len(s.batchers), len(s.incidents), len(s.logs), dataFile)
 		}
+	}
+
+	// Always ensure default admin user is seeded if users map is empty
+	if len(s.users) == 0 {
+		s.bootstrapUsers()
 	}
 
 	return s
@@ -214,6 +222,11 @@ func (s *Store) SaveToFile() error {
 // GetUserByID retrieves a user by ID.
 func (s *Store) GetUserByID(id string) (*models.User, bool) {
 	s.mu.RLock()
+	if len(s.users) == 0 {
+		s.mu.RUnlock()
+		s.bootstrapUsers()
+		s.mu.RLock()
+	}
 	defer s.mu.RUnlock()
 
 	u, ok := s.users[id]
@@ -227,6 +240,11 @@ func (s *Store) GetUserByID(id string) (*models.User, bool) {
 // GetUserByUsernameOrEmail finds a user by username or email (case-insensitive).
 func (s *Store) GetUserByUsernameOrEmail(identifier string) (*models.User, bool) {
 	s.mu.RLock()
+	if len(s.users) == 0 {
+		s.mu.RUnlock()
+		s.bootstrapUsers()
+		s.mu.RLock()
+	}
 	defer s.mu.RUnlock()
 
 	lower := strings.ToLower(strings.TrimSpace(identifier))
