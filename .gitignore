@@ -13,6 +13,11 @@
 /data/*.tmp
 /data/openboy_state.json.tmp
 
+# Secrets and environment
+.env
+*.env.local
+!/.env.example
+
 # OS & IDE metadata
 .DS_Store
 Thumbs.db

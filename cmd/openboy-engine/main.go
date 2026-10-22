@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"openboy-engine/internal/api"
+	"openboy-engine/internal/config"
 	"openboy-engine/internal/db"
 	"openboy-engine/internal/engine"
 	"openboy-engine/internal/store"
@@ -29,11 +30,13 @@ const banner = `
 `
 
 func main() {
-	defaultMySQL := os.Getenv("MYSQL_DSN")
-	port := flag.Int("port", 8080, "HTTP REST & SSE API port")
-	workers := flag.Int("workers", 15, "Number of concurrent probe worker goroutines")
-	dataDir := flag.String("data-dir", "./data", "Directory path for persistent JSON state snapshots")
-	mysqlDSN := flag.String("mysql", defaultMySQL, "MySQL DSN connection string (e.g. root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true)")
+	// 1. Load secrets and defaults from .env
+	cfg := config.Load()
+
+	port := flag.Int("port", cfg.ServerPort, "HTTP REST & SSE API port")
+	workers := flag.Int("workers", cfg.WorkerCount, "Number of concurrent probe worker goroutines")
+	dataDir := flag.String("data-dir", cfg.DataDir, "Directory path for persistent JSON state snapshots")
+	mysqlDSN := flag.String("mysql", cfg.MySQLDSN(), "MySQL DSN connection string (e.g. root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true)")
 	flag.Parse()
 
 	fmt.Print(banner)
@@ -42,13 +45,14 @@ func main() {
 	logger.Info("Bootstrapping OpenBoy Engine...")
 	logger.Info("Configured worker pool concurrency: %d", *workers)
 
-	// 1. Initialize MySQL or File Store
+	// 2. Initialize MySQL or File Store
 	var mysqlSync *store.MySQLSync
 	if *mysqlDSN != "" {
-		logger.Info("Connecting to MySQL database: %s", *mysqlDSN)
+		logger.Info("Connecting to MySQL: %s", *mysqlDSN)
 		sqlDB, err := db.ConnectMySQL(*mysqlDSN)
 		if err != nil {
 			logger.Warn("Could not connect to MySQL (%v). Falling back to JSON state store: %s", err, dataFile)
+			logger.Info("Configure database in .env (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)")
 		} else {
 			if err := db.AutoMigrate(sqlDB); err != nil {
 				logger.Warn("MySQL auto-migration failed: %v", err)
@@ -56,7 +60,7 @@ func main() {
 			mysqlSync = store.NewMySQLSync(sqlDB)
 		}
 	} else {
-		logger.Info("No -mysql DSN provided. Using local state file: %s (Pass -mysql \"user:pass@tcp(host:3306)/openboy?parseTime=true\" to connect MySQL)", dataFile)
+		logger.Info("No MySQL configured. Using local state file: %s (Set DB_* in .env or pass -mysql)", dataFile)
 	}
 
 	s := store.NewStore(dataFile, mysqlSync)
