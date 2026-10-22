@@ -123,6 +123,9 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	bodySnippet := string(bodyBytes)
 
+	// Drain remaining body so connection can be reused by http.Transport pool
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+
 	expected := m.ExpectedStatus
 	if expected <= 0 {
 		expected = 200

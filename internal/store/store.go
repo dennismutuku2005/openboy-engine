@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"openboy-engine/internal/models"
 	"openboy-engine/pkg/logger"
 )
@@ -34,9 +33,10 @@ type Store struct {
 	startTime    time.Time
 	totalRuns    int64
 	totalLatency int64
-	subscribers  map[chan models.ExecutionLog]struct{}
-	subMu        sync.RWMutex
-	mysql        *MySQLSync
+	subscribers   map[chan models.ExecutionLog]struct{}
+	subMu         sync.RWMutex
+	mysql         *MySQLSync
+	mysqlLogQueue chan models.ExecutionLog
 }
 
 // NewStore initializes a store, loading from MySQL if connected or data/openboy_state.json if available.
@@ -46,8 +46,8 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 		monitors:    make(map[string]*models.Monitor),
 		batchers:    make(map[string]*models.Batcher),
 		incidents:   make(map[string]*models.Incident),
-		logs:        make([]models.ExecutionLog, 0, 1000),
-		maxLogs:     5000,
+		logs:        make([]models.ExecutionLog, 0, 500),
+		maxLogs:     500,
 		filePath:    dataFile,
 		startTime:   time.Now(),
 		subscribers: make(map[chan models.ExecutionLog]struct{}),
@@ -55,6 +55,8 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 
 	if len(mysqlDB) > 0 && mysqlDB[0] != nil {
 		s.mysql = mysqlDB[0]
+		s.mysqlLogQueue = make(chan models.ExecutionLog, 256)
+		go s.startMySQLLogWorker()
 		// Clean up any legacy seeded/demo monitors and fake logs from MySQL
 		if err := s.mysql.CleanLegacySeed(); err != nil {
 			logger.Warn("Failed to clean legacy seed from MySQL: %v", err)
@@ -553,19 +555,31 @@ func (s *Store) RecordPingResult(log models.ExecutionLog) {
 	s.totalRuns++
 	s.totalLatency += log.Latency
 
-	// Prepend log to ring buffer
-	s.logs = append([]models.ExecutionLog{log}, s.logs...)
-	if len(s.logs) > s.maxLogs {
-		s.logs = s.logs[:s.maxLogs]
+	// Prepend log to ring buffer with zero heap allocation when buffer is full
+	if len(s.logs) >= s.maxLogs {
+		copy(s.logs[1:], s.logs[:s.maxLogs-1])
+		s.logs[0] = log
+	} else {
+		s.logs = append([]models.ExecutionLog{log}, s.logs...)
 	}
 	s.mu.Unlock()
 
 	// Notify SSE subscribers
 	s.broadcastLog(log)
 
-	// Sync to MySQL
-	if s.mysql != nil {
-		go s.mysql.RecordLog(log)
+	// Sync to MySQL via bounded channel (prevents goroutine leaks during network latency)
+	if s.mysqlLogQueue != nil {
+		select {
+		case s.mysqlLogQueue <- log:
+		default:
+			// Dropped if worker queue is backlogged
+		}
+	}
+}
+
+func (s *Store) startMySQLLogWorker() {
+	for log := range s.mysqlLogQueue {
+		s.mysql.RecordLog(log)
 	}
 }
 
