@@ -75,20 +75,20 @@ jobs:
       - name: Upload Binary and PM2 Config to Droplet (/tmp)
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.HOST || secrets.DROPLET_HOST }}
-          username: ${{ secrets.USERNAME || secrets.DROPLET_USERNAME }}
-          password: ${{ secrets.PASSWORD || secrets.DROPLET_PASSWORD }}
-          port: ${{ secrets.PORT || secrets.DROPLET_PORT || '22' }}
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USERNAME }}
+          password: ${{ secrets.DROPLET_PASSWORD }}
+          port: ${{ secrets.DROPLET_PORT || '22' }}
           source: "openboy-engine,ecosystem.config.js"
           target: "/tmp"
 
       - name: Deploy Binary and Start/Restart PM2 on Port 4040
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.HOST || secrets.DROPLET_HOST }}
-          username: ${{ secrets.USERNAME || secrets.DROPLET_USERNAME }}
-          password: ${{ secrets.PASSWORD || secrets.DROPLET_PASSWORD }}
-          port: ${{ secrets.PORT || secrets.DROPLET_PORT || '22' }}
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USERNAME }}
+          password: ${{ secrets.DROPLET_PASSWORD }}
+          port: ${{ secrets.DROPLET_PORT || '22' }}
           script_stop: true
           script: |
             set -e
