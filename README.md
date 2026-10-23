@@ -3,13 +3,12 @@
   <p>High-Performance Health Probe Orchestrator, Queue Batcher & REST/SSE API</p>
 </div>
 
----
 
 ## Overview
 
 OpenBoy Engine is the core backend orchestrator for the OpenBoy monitoring platform. Built with Go (`go1.27.0`), it provides sub-second precision tick loops, dispatches multi-worker HTTP health checks, measures round-trip latencies, manages background batch workers and SLA incidents, handles JWT-secured operator authentication, and streams real-time execution telemetry via Server-Sent Events (SSE).
 
----
+
 
 ## Database & Environment Configuration
 
@@ -47,7 +46,7 @@ JWT_SECRET=openboy-super-secret-jwt-signing-key-2026
 3. `.env` file values
 4. Safe internal defaults
 
----
+
 
 ## Architecture
 
@@ -98,7 +97,7 @@ openboy-engine/
 └── .gitignore                   # Ignores compiled binaries and runtime state
 ```
 
----
+
 
 ## Getting Started
 
@@ -121,7 +120,7 @@ go build -o bin/openboy-engine.exe ./cmd/openboy-engine/main.go
 go test -v ./...
 ```
 
----
+
 
 ## Authentication & Default Credentials
 
@@ -130,7 +129,7 @@ go test -v ./...
 - **Default Email:** `admin@openboy.dev`
 - **Default Live API Key:** `ob_live_8f99e3a07c1264b91`
 
----
+
 
 ## API Endpoints
 
