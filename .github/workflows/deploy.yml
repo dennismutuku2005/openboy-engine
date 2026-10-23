@@ -54,8 +54,7 @@ jobs:
           retention-days: 1
 
   # ============================================================================
-  # 2. DEPLOY JOB (Runs automatically when build & tests pass)
-  # Uses SSH username/password, transfers binary, and restarts with PM2 on port 4040
+  # 2. DEPLOY JOB (Uses native OpenSSH + sshpass for 100% Ubuntu 25.04 compatibility)
   # ============================================================================
   deploy:
     name: Deploy to Remote Droplet via PM2
@@ -72,29 +71,39 @@ jobs:
           name: openboy-engine-linux
           path: ./
 
-      - name: Upload Binary and PM2 Config to Droplet (/tmp)
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USERNAME }}
-          password: ${{ secrets.DROPLET_PASSWORD }}
-          port: ${{ secrets.DROPLET_PORT || '22' }}
-          source: "openboy-engine,ecosystem.config.js"
-          target: "/tmp"
+      - name: Install OpenSSH Client & sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass openssh-client
 
-      - name: Deploy Binary and Start/Restart PM2 on Port 4040
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USERNAME }}
-          password: ${{ secrets.DROPLET_PASSWORD }}
-          port: ${{ secrets.DROPLET_PORT || '22' }}
-          script_stop: true
-          script: |
+      - name: Deploy to Droplet and Restart PM2 on Port 4040
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST || secrets.HOST }}
+          DROPLET_USERNAME: ${{ secrets.DROPLET_USERNAME || secrets.USERNAME }}
+          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD || secrets.PASSWORD }}
+          DROPLET_PORT: ${{ secrets.DROPLET_PORT || secrets.PORT || '22' }}
+        run: |
+          # 1. SSH Server port: standard SSH is port 22
+          # If the user supplied 4040 (app port) as the droplet SSH port, fallback to 22!
+          SSH_PORT="${DROPLET_PORT:-22}"
+          if [ "$SSH_PORT" = "4040" ] || [ -z "$SSH_PORT" ]; then
+            SSH_PORT=22
+          fi
+
+          echo "==> Preparing connection to ${DROPLET_USERNAME}@${DROPLET_HOST} on SSH port ${SSH_PORT}..."
+          export SSHPASS="$DROPLET_PASSWORD"
+
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=15"
+
+          echo "==> Transferring Linux binary and ecosystem.config.js to droplet via SCP..."
+          sshpass -e scp -P "$SSH_PORT" $SSH_OPTS openboy-engine ecosystem.config.js "${DROPLET_USERNAME}@${DROPLET_HOST}:/tmp/"
+
+          echo "==> Executing remote PM2 installation and startup on droplet..."
+          sshpass -e ssh -p "$SSH_PORT" $SSH_OPTS "${DROPLET_USERNAME}@${DROPLET_HOST}" "bash -s" << 'EOF'
             set -e
 
-            TARGET_DIR="${{ secrets.DEPLOY_PATH || '/var/www/openboy-engine' }}"
-            if [ ! -w "/var/www" ] && [ "$EUID" -ne 0 ] && [ "$TARGET_DIR" = "/var/www/openboy-engine" ]; then
+            TARGET_DIR="/var/www/openboy-engine"
+            if [ ! -w "/var/www" ] && [ "$EUID" -ne 0 ]; then
               TARGET_DIR="$HOME/openboy-engine"
             fi
 
@@ -121,7 +130,7 @@ jobs:
                 echo "DB_NAME=openboy"
               } > "$TARGET_DIR/.env"
             else
-              echo "==> Updating SERVER_PORT to 4040 in existing .env..."
+              echo "==> Ensuring SERVER_PORT=4040 in existing .env..."
               if grep -q "^SERVER_PORT=" "$TARGET_DIR/.env"; then
                 sed -i 's/^SERVER_PORT=.*/SERVER_PORT=4040/' "$TARGET_DIR/.env"
               else
@@ -130,8 +139,14 @@ jobs:
             fi
 
             if ! command -v pm2 &> /dev/null; then
-              echo "==> PM2 not found. Installing pm2 globally..."
-              npm install -g pm2 || sudo npm install -g pm2
+              echo "==> PM2 not found. Installing Node.js & PM2 globally..."
+              if command -v npm &> /dev/null; then
+                npm install -g pm2 || sudo npm install -g pm2
+              elif command -v apt-get &> /dev/null; then
+                curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                sudo apt-get install -y nodejs
+                sudo npm install -g pm2
+              fi
             fi
 
             cd "$TARGET_DIR"
@@ -150,3 +165,4 @@ jobs:
             echo " Status check: pm2 status openboy-engine"
             echo " Live logs:    pm2 logs openboy-engine"
             echo "================================================================="
+          EOF
