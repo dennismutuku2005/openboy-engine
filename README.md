@@ -19,7 +19,7 @@ A pre-configured template is provided in `.env.example`:
 
 ```env
 # Server Network Port
-SERVER_PORT=8080
+SERVER_PORT=4040
 
 # Concurrency Worker Pool (parallel probe workers)
 WORKER_COUNT=15

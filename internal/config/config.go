@@ -40,7 +40,7 @@ func Load(envPath ...string) *Config {
 	loadDotEnv(path)
 
 	cfg := &Config{
-		ServerPort:  getEnvInt("SERVER_PORT", 8080),
+		ServerPort:  getEnvInt("SERVER_PORT", 4040),
 		WorkerCount: getEnvInt("WORKER_COUNT", 15),
 		DataDir:     getEnv("DATA_DIR", "./data"),
 		UIDir:       getEnv("UI_DIR", ""),

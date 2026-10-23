@@ -1,0 +1,152 @@
+name: Deploy OpenBoy Engine
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # 1. BUILD & TEST JOB
+  # Runs tests and cross-compiles static Linux AMD64 binary for remote droplet
+  # ============================================================================
+  build:
+    name: Build & Verify Linux Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Unit Tests
+        run: go test -v ./...
+
+      - name: Compile Linux AMD64 Binary
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w" -o dist/openboy-engine ./cmd/openboy-engine/main.go
+          chmod +x dist/openboy-engine
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openboy-engine-linux
+          path: dist/openboy-engine
+          retention-days: 1
+
+  # ============================================================================
+  # 2. DEPLOY JOB (Runs automatically when build & tests pass)
+  # Uses SSH username/password, transfers binary, and restarts with PM2 on port 4040
+  # ============================================================================
+  deploy:
+    name: Deploy to Remote Droplet via PM2
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Compiled Linux Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: openboy-engine-linux
+          path: ./
+
+      - name: Upload Binary and PM2 Config to Droplet (/tmp)
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST || secrets.DROPLET_HOST }}
+          username: ${{ secrets.USERNAME || secrets.DROPLET_USERNAME }}
+          password: ${{ secrets.PASSWORD || secrets.DROPLET_PASSWORD }}
+          port: ${{ secrets.PORT || secrets.DROPLET_PORT || '22' }}
+          source: "openboy-engine,ecosystem.config.js"
+          target: "/tmp"
+
+      - name: Deploy Binary and Start/Restart PM2 on Port 4040
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST || secrets.DROPLET_HOST }}
+          username: ${{ secrets.USERNAME || secrets.DROPLET_USERNAME }}
+          password: ${{ secrets.PASSWORD || secrets.DROPLET_PASSWORD }}
+          port: ${{ secrets.PORT || secrets.DROPLET_PORT || '22' }}
+          script_stop: true
+          script: |
+            set -e
+
+            TARGET_DIR="${{ secrets.DEPLOY_PATH || '/var/www/openboy-engine' }}"
+            if [ ! -w "/var/www" ] && [ "$EUID" -ne 0 ] && [ "$TARGET_DIR" = "/var/www/openboy-engine" ]; then
+              TARGET_DIR="$HOME/openboy-engine"
+            fi
+
+            echo "==> Deploying OpenBoy Engine into: $TARGET_DIR"
+            mkdir -p "$TARGET_DIR"
+            mkdir -p "$TARGET_DIR/data"
+
+            chmod +x /tmp/openboy-engine
+            mv /tmp/openboy-engine "$TARGET_DIR/openboy-engine"
+            if [ -f "/tmp/ecosystem.config.js" ]; then
+              mv /tmp/ecosystem.config.js "$TARGET_DIR/ecosystem.config.js"
+            fi
+
+            if [ ! -f "$TARGET_DIR/.env" ]; then
+              echo "==> Creating initial .env configuration..."
+              {
+                echo "SERVER_PORT=4040"
+                echo "WORKER_COUNT=15"
+                echo "DATA_DIR=./data"
+                echo "DB_HOST=127.0.0.1"
+                echo "DB_PORT=3306"
+                echo "DB_USER=root"
+                echo "DB_PASSWORD="
+                echo "DB_NAME=openboy"
+              } > "$TARGET_DIR/.env"
+            else
+              echo "==> Updating SERVER_PORT to 4040 in existing .env..."
+              if grep -q "^SERVER_PORT=" "$TARGET_DIR/.env"; then
+                sed -i 's/^SERVER_PORT=.*/SERVER_PORT=4040/' "$TARGET_DIR/.env"
+              else
+                echo "SERVER_PORT=4040" >> "$TARGET_DIR/.env"
+              fi
+            fi
+
+            if ! command -v pm2 &> /dev/null; then
+              echo "==> PM2 not found. Installing pm2 globally..."
+              npm install -g pm2 || sudo npm install -g pm2
+            fi
+
+            cd "$TARGET_DIR"
+            if pm2 describe openboy-engine &> /dev/null; then
+              echo "==> Restarting existing PM2 process 'openboy-engine'..."
+              pm2 restart openboy-engine --update-env
+            else
+              echo "==> Starting new PM2 instance for 'openboy-engine' on port 4040..."
+              pm2 start ./openboy-engine --name "openboy-engine" -- -port 4040
+            fi
+
+            pm2 save
+
+            echo "================================================================="
+            echo " SUCCESS: OpenBoy Engine deployed and active under PM2 (Port 4040)"
+            echo " Status check: pm2 status openboy-engine"
+            echo " Live logs:    pm2 logs openboy-engine"
+            echo "================================================================="
