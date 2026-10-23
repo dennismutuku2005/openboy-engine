@@ -122,15 +122,6 @@ go test -v ./...
 
 
 
-## Authentication & Default Credentials
-
-- **Default Username:** `admin`
-- **Default Password:** `admin`
-- **Default Email:** `admin@openboy.dev`
-- **Default Live API Key:** `ob_live_8f99e3a07c1264b91`
-
-
-
 ## API Endpoints
 
 ### Authentication
