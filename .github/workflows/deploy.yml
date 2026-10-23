@@ -79,27 +79,44 @@ jobs:
       - name: Deploy to Droplet and Restart PM2 on Port 4040
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST || secrets.HOST }}
-          DROPLET_USERNAME: ${{ secrets.DROPLET_USERNAME || secrets.USERNAME }}
-          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD || secrets.PASSWORD }}
-          DROPLET_PORT: ${{ secrets.DROPLET_PORT || secrets.PORT || '22' }}
+          DROPLET_USERNAME: ${{ secrets.DROPLET_USERNAME || secrets.DROPLET_USER || secrets.SSH_USER || secrets.USERNAME || secrets.USER || 'root' }}
+          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD || secrets.SSH_PASSWORD || secrets.PASSWORD }}
+          DROPLET_PORT: ${{ secrets.DROPLET_PORT || secrets.SSH_PORT || secrets.PORT || '22' }}
         run: |
-          # 1. SSH Server port: standard SSH is port 22
+          # 1. SSH Username: default to 'root' if empty or not set
+          SSH_USER="${DROPLET_USERNAME:-root}"
+          if [ -z "$SSH_USER" ] || [ "$SSH_USER" = "" ]; then
+            SSH_USER="root"
+          fi
+
+          # 2. SSH Server port: standard SSH is port 22
           # If the user supplied 4040 (app port) as the droplet SSH port, fallback to 22!
           SSH_PORT="${DROPLET_PORT:-22}"
           if [ "$SSH_PORT" = "4040" ] || [ -z "$SSH_PORT" ]; then
             SSH_PORT=22
           fi
 
-          echo "==> Preparing connection to ${DROPLET_USERNAME}@${DROPLET_HOST} on SSH port ${SSH_PORT}..."
+          # 3. Validate required secrets
+          if [ -z "$DROPLET_HOST" ]; then
+            echo "::error::Secret DROPLET_HOST is empty! Please add DROPLET_HOST to your GitHub Repository Secrets."
+            exit 1
+          fi
+
+          if [ -z "$DROPLET_PASSWORD" ]; then
+            echo "::error::Secret DROPLET_PASSWORD is empty! Please add DROPLET_PASSWORD to your GitHub Repository Secrets."
+            exit 1
+          fi
+
+          echo "==> Preparing connection to ${SSH_USER}@${DROPLET_HOST} on SSH port ${SSH_PORT}..."
           export SSHPASS="$DROPLET_PASSWORD"
 
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=15"
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no"
 
           echo "==> Transferring Linux binary and ecosystem.config.js to droplet via SCP..."
-          sshpass -e scp -P "$SSH_PORT" $SSH_OPTS openboy-engine ecosystem.config.js "${DROPLET_USERNAME}@${DROPLET_HOST}:/tmp/"
+          sshpass -e scp -P "$SSH_PORT" $SSH_OPTS openboy-engine ecosystem.config.js "${SSH_USER}@${DROPLET_HOST}:/tmp/"
 
           echo "==> Executing remote PM2 installation and startup on droplet..."
-          sshpass -e ssh -p "$SSH_PORT" $SSH_OPTS "${DROPLET_USERNAME}@${DROPLET_HOST}" "bash -s" << 'EOF'
+          sshpass -e ssh -p "$SSH_PORT" $SSH_OPTS "${SSH_USER}@${DROPLET_HOST}" "bash -s" << 'EOF'
             set -e
 
             TARGET_DIR="/var/www/openboy-engine"
