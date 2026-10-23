@@ -20,13 +20,12 @@ import (
 )
 
 const banner = `
-   ___                   ____             ______            _            
-  / _ \ _ __   ___ _ __ | __ )  ___  _   | ____|_ __   __ _(_)_ __   ___ 
- | | | | '_ \ / _ \ '_ \|  _ \ / _ \| |  |  _| | '_ \ / _` + "`" + ` | | '_ \ / _ \
- | |_| | |_) |  __/ | | | |_) | (_) |_|  | |___| | | | (_| | | | | |  __/
-  \___/| .__/ \___|_| |_|____/ \___/(_)  |_____|_| |_|\__, |_|_| |_|\___|
-       |_|                                            |___/              
-   High-Frequency Cron & SLA Health Probe Orchestrator (Go Engine v1.0)
+   ___                   ____                 ______            _            
+  / _ \ _ __   ___ _ __ | __ )  ___   _   _  | ____|_ __   __ _(_)_ __   ___ 
+ | | | | '_ \ / _ \ '_ \|  _ \ / _ \ | | | | |  _| | '_ \ / _` + "`" + ` | | '_ \ / _ \
+ | |_| | |_) |  __/ | | | |_) | (_) || |_| | | |___| | | | (_| | | | | |  __/
+  \___/| .__/ \___|_| |_|____/ \___/  \__, | |_____|_| |_|\__, |_|_| |_|\___|
+       |_|                            |___/               |___/              
 `
 
 func main() {
@@ -37,9 +36,24 @@ func main() {
 	workers := flag.Int("workers", cfg.WorkerCount, "Number of concurrent probe worker goroutines")
 	dataDir := flag.String("data-dir", cfg.DataDir, "Directory path for persistent JSON state snapshots")
 	mysqlDSN := flag.String("mysql", cfg.MySQLDSN(), "MySQL DSN connection string (e.g. root:password@tcp(127.0.0.1:3306)/openboy?parseTime=true)")
+	uiDir := flag.String("ui-dir", cfg.UIDir, "Path to exported static UI directory (default auto-detects ../openboy-app/out, ./ui, ./out)")
 	flag.Parse()
 
 	fmt.Print(banner)
+
+	resolvedUIDir := *uiDir
+	if resolvedUIDir == "" {
+		candidates := []string{"../openboy-app/out", "./ui", "./out", "./dist"}
+		for _, c := range candidates {
+			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+				resolvedUIDir = c
+				break
+			}
+		}
+	}
+	if resolvedUIDir != "" {
+		logger.Info("Serving static dashboard UI from: %s", resolvedUIDir)
+	}
 
 	dataFile := filepath.Join(*dataDir, "openboy_state.json")
 	logger.Info("Bootstrapping OpenBoy Engine...")
@@ -78,7 +92,7 @@ func main() {
 
 	// 5. Initialize API and Router
 	apiService := api.NewAPI(s, scheduler, pool)
-	router := api.NewRouter(apiService)
+	router := api.NewRouter(apiService, resolvedUIDir)
 
 	serverAddr := fmt.Sprintf(":%d", *port)
 	server := &http.Server{

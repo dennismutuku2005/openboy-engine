@@ -16,6 +16,7 @@ type Config struct {
 	ServerPort  int
 	WorkerCount int
 	DataDir     string
+	UIDir       string
 
 	// MySQL Database Credentials
 	DBHost     string
@@ -42,6 +43,7 @@ func Load(envPath ...string) *Config {
 		ServerPort:  getEnvInt("SERVER_PORT", 8080),
 		WorkerCount: getEnvInt("WORKER_COUNT", 15),
 		DataDir:     getEnv("DATA_DIR", "./data"),
+		UIDir:       getEnv("UI_DIR", ""),
 
 		DBHost:     getEnv("DB_HOST", "127.0.0.1"),
 		DBPort:     getEnvInt("DB_PORT", 3306),

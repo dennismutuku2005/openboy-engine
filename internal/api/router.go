@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -12,12 +14,19 @@ import (
 
 // Router maps incoming HTTP requests to handlers with CORS and recovery.
 type Router struct {
-	api *API
+	api       *API
+	staticDir string
 }
 
-// NewRouter constructs a router instance.
-func NewRouter(api *API) *Router {
-	return &Router{api: api}
+// NewRouter constructs a router instance with optional static UI directory.
+func NewRouter(api *API, staticDir ...string) *Router {
+	r := &Router{api: api}
+	if len(staticDir) > 0 && staticDir[0] != "" {
+		if fi, err := os.Stat(staticDir[0]); err == nil && fi.IsDir() {
+			r.staticDir = staticDir[0]
+		}
+	}
+	return r
 }
 
 // ServeHTTP handles requests, CORS headers, error recovery and routing.
@@ -50,6 +59,13 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Route dispatch
 	switch {
 	case path == "" || path == "/":
+		if rt.staticDir != "" {
+			indexPath := filepath.Join(rt.staticDir, "index.html")
+			if _, err := os.Stat(indexPath); err == nil {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"service": "OpenBoy Cron & Health Engine",
 			"status":  "online",
@@ -164,6 +180,36 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})(w, r)
 
 	default:
+		if rt.staticDir != "" && !strings.HasPrefix(path, "/api") {
+			cleanPath := strings.TrimPrefix(r.URL.Path, "/")
+			fullPath := filepath.Join(rt.staticDir, filepath.FromSlash(cleanPath))
+			if fi, err := os.Stat(fullPath); err == nil {
+				if fi.IsDir() {
+					dirIndex := filepath.Join(fullPath, "index.html")
+					if _, err := os.Stat(dirIndex); err == nil {
+						http.ServeFile(w, r, dirIndex)
+						return
+					}
+				} else {
+					http.ServeFile(w, r, fullPath)
+					return
+				}
+			}
+			if fi, err := os.Stat(fullPath + ".html"); err == nil && !fi.IsDir() {
+				http.ServeFile(w, r, fullPath+".html")
+				return
+			}
+			dirIndex := filepath.Join(fullPath, "index.html")
+			if fi, err := os.Stat(dirIndex); err == nil && !fi.IsDir() {
+				http.ServeFile(w, r, dirIndex)
+				return
+			}
+			spaIndex := filepath.Join(rt.staticDir, "index.html")
+			if _, err := os.Stat(spaIndex); err == nil {
+				http.ServeFile(w, r, spaIndex)
+				return
+			}
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Route not found: %s %s", r.Method, path))
 	}
 

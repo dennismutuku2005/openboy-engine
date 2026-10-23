@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -193,3 +194,41 @@ func TestMonitorsAPI(t *testing.T) {
 		t.Fatalf("Expected 200 OK for toggle, got %d", toggleResp.StatusCode)
 	}
 }
+
+func TestStaticUIServing(t *testing.T) {
+	// Create a temporary static directory
+	tmpDir := t.TempDir()
+	indexFile := tmpDir + "/index.html"
+	_ = os.WriteFile(indexFile, []byte("<h1>OpenBoy Test UI</h1>"), 0644)
+
+	s := store.NewStore("")
+	prober := engine.NewProber()
+	pool := engine.NewWorkerPool(1, s, prober)
+	scheduler := engine.NewScheduler(s, pool, prober)
+	apiService := NewAPI(s, scheduler, pool)
+	router := NewRouter(apiService, tmpDir)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	// 1. Root / should serve index.html
+	resp, err := http.Get(server.URL + "/")
+	if err != nil {
+		t.Fatalf("Failed to GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 for static root, got %d", resp.StatusCode)
+	}
+
+	// 2. /api/health should still hit API handler
+	healthResp, err := http.Get(server.URL + "/api/health")
+	if err != nil {
+		t.Fatalf("Failed to GET /api/health: %v", err)
+	}
+	defer healthResp.Body.Close()
+	if healthResp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 for /api/health, got %d", healthResp.StatusCode)
+	}
+}
+

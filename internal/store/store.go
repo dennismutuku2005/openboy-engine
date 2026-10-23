@@ -446,10 +446,71 @@ func (s *Store) RecordPingResult(log models.ExecutionLog) {
 			if m.ConsecutiveFails >= 2 {
 				m.Status = "failing"
 			}
+
+			// Automatically create an incident if no active incident is currently open for this monitor
+			var openInc *models.Incident
+			for _, inc := range s.incidents {
+				if inc.MonitorID == m.ID && inc.Status == "investigating" {
+					openInc = inc
+					break
+				}
+			}
+
+			if openInc == nil {
+				severity := "P2 - High"
+				if m.ConsecutiveFails >= 2 || log.Status >= 500 || log.Status == 0 {
+					severity = "P1 - Critical"
+				} else if log.Status >= 400 {
+					severity = "P3 - Moderate"
+				}
+
+				cause := log.Error
+				if cause == "" {
+					cause = fmt.Sprintf("HTTP %d %s", log.Status, log.StatusText)
+				}
+
+				newInc := models.Incident{
+					ID:           fmt.Sprintf("inc-%d", time.Now().UnixNano()),
+					MonitorID:    m.ID,
+					Title:        fmt.Sprintf("Outage detected: %s", m.Name),
+					Service:      m.Name,
+					URL:          m.URL,
+					Severity:     severity,
+					Status:       "investigating",
+					StartedAt:    now,
+					StartedAtStr: "Just now",
+					Duration:     "Ongoing",
+					Cause:        cause,
+					DispatchedTo: []string{"Engine Internal", "Default Webhook"},
+				}
+				s.incidents[newInc.ID] = &newInc
+				if s.mysql != nil {
+					go s.mysql.SaveIncident(newInc)
+				}
+			}
 		} else {
 			m.ConsecutiveFails = 0
 			if m.Status == "failing" {
 				m.Status = "active"
+			}
+
+			// Automatically resolve any open incident when monitor recovers
+			for _, inc := range s.incidents {
+				if inc.MonitorID == m.ID && inc.Status == "investigating" {
+					inc.Status = "resolved"
+					resTime := now
+					inc.ResolvedAt = &resTime
+					durSec := int(now.Sub(inc.StartedAt).Seconds())
+					if durSec < 60 {
+						inc.Duration = fmt.Sprintf("%ds", durSec)
+					} else {
+						inc.Duration = fmt.Sprintf("%dm", durSec/60)
+					}
+					copyInc := *inc
+					if s.mysql != nil {
+						go s.mysql.SaveIncident(copyInc)
+					}
+				}
 			}
 		}
 
