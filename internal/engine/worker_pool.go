@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"openboy-engine/internal/models"
 	"openboy-engine/internal/store"
@@ -21,6 +22,7 @@ type WorkerPool struct {
 	jobs          chan Job
 	store         *store.Store
 	prober        *Prober
+	inFlight      sync.Map // monitorID (string) -> dispatchTime (time.Time)
 	activeWorkers int32
 	wg            sync.WaitGroup
 	ctx           context.Context
@@ -69,6 +71,9 @@ func (wp *WorkerPool) worker(id int) {
 			// Store outcome and update monitor stats
 			wp.store.RecordPingResult(log)
 
+			// Release in-flight lock after result has been recorded
+			wp.inFlight.Delete(job.Monitor.ID)
+
 			if log.OK {
 				logger.Probe("[%s] %s %s -> %d (%dms)", log.MonitorID, log.Method, log.URL, log.Status, log.Latency)
 			} else {
@@ -80,12 +85,26 @@ func (wp *WorkerPool) worker(id int) {
 	}
 }
 
+// IsInFlight checks whether a probe for the specified monitor is actively queued or running.
+func (wp *WorkerPool) IsInFlight(monitorID string) bool {
+	_, ok := wp.inFlight.Load(monitorID)
+	return ok
+}
+
 // Enqueue submits a monitor probe job to the worker pool.
+// Returns false if the monitor already has an active probe in flight or if the queue is full.
 func (wp *WorkerPool) Enqueue(m models.Monitor) bool {
+	// Atomic check-and-set: prevent duplicate concurrent execution of the same monitor
+	if _, loaded := wp.inFlight.LoadOrStore(m.ID, time.Now()); loaded {
+		return false
+	}
+
 	select {
 	case wp.jobs <- Job{Monitor: m}:
 		return true
 	default:
+		// Queue was full, release in-flight marker so monitor isn't permanently locked out
+		wp.inFlight.Delete(m.ID)
 		logger.Warn("Worker queue full! Dropping probe job for %s", m.ID)
 		return false
 	}

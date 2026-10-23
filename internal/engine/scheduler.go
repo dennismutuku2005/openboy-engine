@@ -15,29 +15,32 @@ import (
 
 // Scheduler coordinates timed cron invocations and high-frequency tickers.
 type Scheduler struct {
-	store       *store.Store
-	pool        *WorkerPool
-	prober      *Prober
-	ticker      *time.Ticker
-	cronParsers map[string]*cronexpr.Expression
-	cronMu      sync.RWMutex
-	lastCronRun map[string]int64 // monitor/batcher ID -> unix minute
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	store          *store.Store
+	pool           *WorkerPool
+	prober         *Prober
+	ticker         *time.Ticker
+	cronParsers    map[string]*cronexpr.Expression
+	cronMu         sync.RWMutex
+	lastCronRun    map[string]int64 // monitor/batcher ID -> unix minute
+	lastDispatched map[string]time.Time
+	dispatchMu     sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
 }
 
 // NewScheduler constructs the scheduler orchestrator.
 func NewScheduler(s *store.Store, pool *WorkerPool, p *Prober) *Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
-		store:       s,
-		pool:        pool,
-		prober:      p,
-		cronParsers: make(map[string]*cronexpr.Expression),
-		lastCronRun: make(map[string]int64),
-		ctx:         ctx,
-		cancel:      cancel,
+		store:          s,
+		pool:           pool,
+		prober:         p,
+		cronParsers:    make(map[string]*cronexpr.Expression),
+		lastCronRun:    make(map[string]int64),
+		lastDispatched: make(map[string]time.Time),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
@@ -70,7 +73,11 @@ func (sc *Scheduler) tick(now time.Time) {
 		}
 
 		if sc.isMonitorDue(&m, now) {
-			sc.pool.Enqueue(m)
+			if sc.pool.Enqueue(m) {
+				sc.dispatchMu.Lock()
+				sc.lastDispatched[m.ID] = now
+				sc.dispatchMu.Unlock()
+			}
 		}
 	}
 
@@ -81,6 +88,11 @@ func (sc *Scheduler) tick(now time.Time) {
 }
 
 func (sc *Scheduler) isMonitorDue(m *models.Monitor, now time.Time) bool {
+	// If a health check probe for this monitor is already queued or executing, NEVER enqueue another!
+	if sc.pool.IsInFlight(m.ID) {
+		return false
+	}
+
 	// 1. Cron-based
 	if m.CronExpr != "" || m.Interval == "cron" {
 		exprStr := m.CronExpr
@@ -141,12 +153,29 @@ func (sc *Scheduler) isMonitorDue(m *models.Monitor, now time.Time) bool {
 		}
 	}
 
-	if m.LastChecked == nil {
-		return true
+	// Strict minimum cadence floor: OpenBoy's fastest probe cadence is 10 seconds.
+	// This prevents misconfigured monitors or rapid loops from hammering endpoints.
+	if intervalSec < 10 {
+		intervalSec = 10
 	}
 
-	elapsed := now.Sub(*m.LastChecked).Seconds()
-	return elapsed >= float64(intervalSec)
+	// Cooldown since last dispatch to worker pool
+	sc.dispatchMu.RLock()
+	lastDisp, hasDisp := sc.lastDispatched[m.ID]
+	sc.dispatchMu.RUnlock()
+	if hasDisp && now.Sub(lastDisp).Seconds() < float64(intervalSec) {
+		return false
+	}
+
+	// Cooldown since last completed execution recorded in store
+	if m.LastChecked != nil {
+		elapsed := now.Sub(*m.LastChecked).Seconds()
+		if elapsed < float64(intervalSec) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (sc *Scheduler) evaluateBatchers(now time.Time) {
@@ -214,11 +243,20 @@ func (sc *Scheduler) TriggerPingNow(monitorID string) (*models.ExecutionLog, err
 		return nil, fmt.Errorf("monitor '%s' not found", monitorID)
 	}
 
+	if sc.pool.IsInFlight(monitorID) {
+		return nil, fmt.Errorf("a health check for monitor '%s' is already in progress", monitorID)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	log := sc.prober.Probe(ctx, m)
 	sc.store.RecordPingResult(log)
+
+	sc.dispatchMu.Lock()
+	sc.lastDispatched[monitorID] = time.Now()
+	sc.dispatchMu.Unlock()
+
 	return &log, nil
 }
 

@@ -439,7 +439,7 @@ func (s *Store) RecordPingResult(log models.ExecutionLog) {
 		m.TotalPings++
 		m.LastStatus = log.Status
 		m.LastLatency = log.Latency
-		now := log.Timestamp
+		now := time.Now()
 		m.LastChecked = &now
 		m.LastCheckedStr = "Just now"
 		m.UpdatedAt = now
