@@ -483,22 +483,28 @@ func (a *API) PingMonitorHandler(w http.ResponseWriter, r *http.Request, id stri
 // EXECUTION LOGS HANDLERS
 // ==========================================
 
-// ListExecutionsHandler returns execution logs with pagination, filter and search.
+// ListExecutionsHandler returns execution logs with pagination, filter, search, and optional monitor ID.
 func (a *API) ListExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	limit := 50
 	offset := 0
 	filter := strings.ToLower(query.Get("filter"))
 	search := query.Get("search")
+	monitorID := query.Get("monitor_id")
+	if monitorID == "" {
+		monitorID = query.Get("monitor")
+	}
 
 	if l, err := strconv.Atoi(query.Get("limit")); err == nil && l > 0 {
 		limit = l
+	} else if monitorID != "" {
+		limit = 500
 	}
 	if o, err := strconv.Atoi(query.Get("offset")); err == nil && o >= 0 {
 		offset = o
 	}
 
-	logs, total := a.store.GetLogs(limit, offset, filter, search)
+	logs, total := a.store.GetLogs(limit, offset, filter, search, monitorID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"logs":   logs,
 		"total":  total,

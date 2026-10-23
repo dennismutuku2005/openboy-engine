@@ -279,6 +279,161 @@ func (m *MySQLSync) RecordLog(log models.ExecutionLog) {
 	}
 }
 
+// LoadRecentLogs fetches the most recent execution logs from MySQL across all monitors.
+func (m *MySQLSync) LoadRecentLogs(limit int) ([]models.ExecutionLog, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	rows, err := m.db.Query(`
+		SELECT id, monitor_id, monitor_name, url, method, status, status_text,
+		       latency_ms, timestamp, is_ok, error_message, response_body
+		FROM execution_logs
+		ORDER BY timestamp DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []models.ExecutionLog
+	for rows.Next() {
+		var l models.ExecutionLog
+		var statusText, errMessage, respBody sql.NullString
+		var isOK bool
+		var timestamp time.Time
+
+		if err := rows.Scan(
+			&l.ID, &l.MonitorID, &l.MonitorName, &l.URL, &l.Method,
+			&l.Status, &statusText, &l.Latency, &timestamp, &isOK,
+			&errMessage, &respBody,
+		); err != nil {
+			continue
+		}
+
+		if statusText.Valid {
+			l.StatusText = statusText.String
+		}
+		if errMessage.Valid {
+			l.Error = errMessage.String
+		}
+		if respBody.Valid {
+			l.ResponseBody = respBody.String
+		}
+		l.OK = isOK
+		l.Timestamp = timestamp
+		l.FormattedTime = timestamp.Format("15:04:05")
+		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return logs, nil
+}
+
+// QueryLogs queries execution logs from MySQL with optional monitorID, filter, search, and pagination.
+func (m *MySQLSync) QueryLogs(monitorID string, filter string, search string, limit int, offset int) ([]models.ExecutionLog, int, error) {
+	if m == nil || m.db == nil {
+		return nil, 0, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	whereClauses := []string{"1=1"}
+	var args []interface{}
+
+	if strings.TrimSpace(monitorID) != "" {
+		whereClauses = append(whereClauses, "monitor_id = ?")
+		args = append(args, strings.TrimSpace(monitorID))
+	}
+
+	filterLower := strings.ToLower(strings.TrimSpace(filter))
+	if filterLower == "error" || filterLower == "failed" || filterLower == "errors" {
+		whereClauses = append(whereClauses, "is_ok = FALSE")
+	} else if filterLower == "ok" || filterLower == "success" {
+		whereClauses = append(whereClauses, "is_ok = TRUE")
+	}
+
+	searchTrim := strings.TrimSpace(search)
+	if searchTrim != "" {
+		searchPattern := "%" + searchTrim + "%"
+		whereClauses = append(whereClauses, "(monitor_name LIKE ? OR url LIKE ? OR error_message LIKE ?)")
+		args = append(args, searchPattern, searchPattern, searchPattern)
+	}
+
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	// Count total
+	countQuery := "SELECT COUNT(*) FROM execution_logs WHERE " + whereSQL
+	var total int
+	err := m.db.QueryRow(countQuery, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Select rows
+	dataQuery := fmt.Sprintf(`
+		SELECT id, monitor_id, monitor_name, url, method, status, status_text,
+		       latency_ms, timestamp, is_ok, error_message, response_body
+		FROM execution_logs
+		WHERE %s
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?`, whereSQL)
+
+	selectArgs := append(args, limit, offset)
+	rows, err := m.db.Query(dataQuery, selectArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []models.ExecutionLog
+	for rows.Next() {
+		var l models.ExecutionLog
+		var statusText, errMessage, respBody sql.NullString
+		var isOK bool
+		var timestamp time.Time
+
+		if err := rows.Scan(
+			&l.ID, &l.MonitorID, &l.MonitorName, &l.URL, &l.Method,
+			&l.Status, &statusText, &l.Latency, &timestamp, &isOK,
+			&errMessage, &respBody,
+		); err != nil {
+			continue
+		}
+
+		if statusText.Valid {
+			l.StatusText = statusText.String
+		}
+		if errMessage.Valid {
+			l.Error = errMessage.String
+		}
+		if respBody.Valid {
+			l.ResponseBody = respBody.String
+		}
+		l.OK = isOK
+		l.Timestamp = timestamp
+		l.FormattedTime = timestamp.Format("15:04:05")
+		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return logs, total, nil
+}
+
+
 // SaveUser persists a user into MySQL.
 func (m *MySQLSync) SaveUser(u models.User) {
 	if m == nil || m.db == nil {

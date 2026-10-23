@@ -95,6 +95,10 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 				s.incidents[inc.ID] = &copyInc
 			}
 		}
+		if logs, err := s.mysql.LoadRecentLogs(1000); err == nil && len(logs) > 0 {
+			logger.Info("Loaded %d execution logs directly from MySQL database", len(logs))
+			s.logs = logs
+		}
 	}
 
 	// Always ensure default admin user is seeded if users map is empty
@@ -568,8 +572,21 @@ func (s *Store) startMySQLLogWorker() {
 // LOG OPERATIONS
 // ==========================================
 
-// GetLogs returns paginated and filtered execution logs.
-func (s *Store) GetLogs(limit, offset int, filter, search string) ([]models.ExecutionLog, int) {
+// GetLogs returns paginated and filtered execution logs, reading from MySQL when connected.
+func (s *Store) GetLogs(limit, offset int, filter, search string, monitorID ...string) ([]models.ExecutionLog, int) {
+	targetMonID := ""
+	if len(monitorID) > 0 {
+		targetMonID = strings.TrimSpace(monitorID[0])
+	}
+
+	if s.mysql != nil {
+		logs, total, err := s.mysql.QueryLogs(targetMonID, filter, search, limit, offset)
+		if err == nil {
+			return logs, total
+		}
+		logger.Warn("Failed to query execution logs from MySQL: %v. Falling back to in-memory logs.", err)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -577,7 +594,11 @@ func (s *Store) GetLogs(limit, offset int, filter, search string) ([]models.Exec
 	searchLower := strings.ToLower(strings.TrimSpace(search))
 
 	for _, l := range s.logs {
-		if filter == "error" || filter == "failed" {
+		if targetMonID != "" && l.MonitorID != targetMonID {
+			continue
+		}
+
+		if filter == "error" || filter == "failed" || filter == "errors" {
 			if l.OK {
 				continue
 			}
