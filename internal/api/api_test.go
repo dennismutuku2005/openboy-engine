@@ -17,9 +17,9 @@ func setupTestRouter(tb testing.TB) (*API, http.Handler, string) {
 	s := store.NewStore(tb.TempDir() + "/test_state.json")
 	prober := engine.NewProber()
 	pool := engine.NewWorkerPool(2, s, prober)
-	scheduler := engine.NewScheduler(s, pool, prober)
 
-	apiService := NewAPI(s, scheduler, pool)
+	// In API unit tests, pass nil scheduler so no uncoordinated background network probes are spawned
+	apiService := NewAPI(s, nil, pool)
 	router := NewRouter(apiService)
 
 	// Create test user and token
@@ -109,10 +109,16 @@ func TestAuthProtection(t *testing.T) {
 func TestMonitorsCrudWithGin(t *testing.T) {
 	_, router, token := setupTestRouter(t)
 
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockServer.Close()
+
 	// 1. Create a monitor
 	createBody := map[string]interface{}{
 		"name":     "Pace Wisp Gateway",
-		"url":      "https://example.com/api",
+		"url":      mockServer.URL,
 		"method":   "GET",
 		"interval": "30s",
 	}

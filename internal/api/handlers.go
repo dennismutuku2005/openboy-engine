@@ -223,7 +223,11 @@ func (a *API) UpdatePasswordHandler(c *gin.Context) {
 
 // HealthHandler returns engine runtime health.
 func (a *API) HealthHandler(c *gin.Context) {
-	stats := a.store.GetSystemStats(a.pool.ActiveWorkers())
+	activeWorkers := 0
+	if a.pool != nil {
+		activeWorkers = a.pool.ActiveWorkers()
+	}
+	stats := a.store.GetSystemStats(activeWorkers)
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "healthy",
 		"service":    "openboy-engine",
@@ -237,7 +241,11 @@ func (a *API) HealthHandler(c *gin.Context) {
 
 // StatsHandler returns system-wide telemetry and KPI cards.
 func (a *API) StatsHandler(c *gin.Context) {
-	stats := a.store.GetSystemStats(a.pool.ActiveWorkers())
+	activeWorkers := 0
+	if a.pool != nil {
+		activeWorkers = a.pool.ActiveWorkers()
+	}
+	stats := a.store.GetSystemStats(activeWorkers)
 	c.JSON(http.StatusOK, stats)
 }
 
@@ -395,10 +403,12 @@ func (a *API) CreateMonitorHandler(c *gin.Context) {
 	created := a.store.CreateMonitor(m)
 	logger.Info("Created new monitor [%s] %s (%s)", created.ID, created.Name, created.URL)
 
-	// Immediately probe once to establish baseline
-	go func() {
-		a.scheduler.TriggerPingNow(created.ID)
-	}()
+	// Immediately probe once to establish baseline if scheduler is active
+	if a.scheduler != nil {
+		go func() {
+			_, _ = a.scheduler.TriggerPingNow(created.ID)
+		}()
+	}
 
 	c.JSON(http.StatusCreated, created)
 }
@@ -456,6 +466,10 @@ func (a *API) ToggleMonitorHandler(c *gin.Context) {
 
 // PingMonitorHandler triggers a manual immediate probe.
 func (a *API) PingMonitorHandler(c *gin.Context) {
+	if a.scheduler == nil {
+		writeError(c, http.StatusServiceUnavailable, "Scheduler is not running")
+		return
+	}
 	id := c.Param("id")
 	log, err := a.scheduler.TriggerPingNow(id)
 	if err != nil {
