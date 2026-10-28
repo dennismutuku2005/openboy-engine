@@ -1,18 +1,16 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"openboy-engine/internal/models"
 	"openboy-engine/internal/store"
 	"openboy-engine/pkg/auth"
 )
 
-type contextKey string
-
-const userContextKey contextKey = "authUser"
+const userContextKey = "authUser"
 
 // AuthMiddleware inspects Authorization: Bearer <token> or X-API-Key headers.
 type AuthMiddleware struct {
@@ -24,10 +22,10 @@ func NewAuthMiddleware(s *store.Store) *AuthMiddleware {
 	return &AuthMiddleware{store: s}
 }
 
-// Authenticate inspects headers and attaches the authenticated user to the context if valid.
-func (am *AuthMiddleware) Authenticate(r *http.Request) (*models.User, error) {
+// Authenticate inspects headers and query params and returns the authenticated user if valid.
+func (am *AuthMiddleware) Authenticate(c *gin.Context) (*models.User, error) {
 	// 1. Try Bearer Token
-	authHeader := r.Header.Get("Authorization")
+	authHeader := c.GetHeader("Authorization")
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		tokenStr := strings.TrimSpace(authHeader[7:])
 		claims, err := auth.ValidateToken(tokenStr)
@@ -53,10 +51,10 @@ func (am *AuthMiddleware) Authenticate(r *http.Request) (*models.User, error) {
 		}
 	}
 
-	// 2. Try X-API-Key header
-	apiKey := r.Header.Get("X-API-Key")
+	// 2. Try X-API-Key header or query parameter
+	apiKey := c.GetHeader("X-API-Key")
 	if apiKey == "" {
-		apiKey = r.URL.Query().Get("api_key")
+		apiKey = c.Query("api_key")
 	}
 	if apiKey != "" {
 		if user, ok := am.store.GetUserByAPIKey(apiKey); ok {
@@ -67,34 +65,39 @@ func (am *AuthMiddleware) Authenticate(r *http.Request) (*models.User, error) {
 	return nil, auth.ErrInvalidToken
 }
 
-// GetUserFromContext retrieves the authenticated user from request context.
-func GetUserFromContext(ctx context.Context) (*models.User, bool) {
-	u, ok := ctx.Value(userContextKey).(*models.User)
+// GetUserFromContext retrieves the authenticated user from Gin context.
+func GetUserFromContext(c *gin.Context) (*models.User, bool) {
+	val, exists := c.Get(userContextKey)
+	if !exists {
+		return nil, false
+	}
+	u, ok := val.(*models.User)
 	return u, ok && u != nil
 }
 
-// RequireAuth wraps a handler and demands valid JWT or API key.
-func (am *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		user, err := am.Authenticate(r)
+// RequireAuth returns a Gin middleware requiring valid JWT or API key.
+func (am *AuthMiddleware) RequireAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, err := am.Authenticate(c)
 		if err != nil || user == nil {
-			writeError(w, http.StatusUnauthorized, "Authentication required: valid Bearer token or X-API-Key header needed")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Authentication required: valid Bearer token or X-API-Key header needed",
+			})
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), userContextKey, user)
-		next(w, r.WithContext(ctx))
+		c.Set(userContextKey, user)
+		c.Next()
 	}
 }
 
 // OptionalAuth attaches user to context if valid, but does not block unauthenticated requests.
-func (am *AuthMiddleware) OptionalAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		user, _ := am.Authenticate(r)
+func (am *AuthMiddleware) OptionalAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, _ := am.Authenticate(c)
 		if user != nil {
-			ctx := context.WithValue(r.Context(), userContextKey, user)
-			r = r.WithContext(ctx)
+			c.Set(userContextKey, user)
 		}
-		next(w, r)
+		c.Next()
 	}
 }

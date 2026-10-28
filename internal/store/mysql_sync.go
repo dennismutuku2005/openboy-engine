@@ -1,11 +1,14 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"strings"
 	"time"
-     "fmt"
+
 	"openboy-engine/internal/models"
 	"openboy-engine/pkg/logger"
 )
@@ -224,6 +227,88 @@ func (m *MySQLSync) DeleteMonitor(id string) {
 	m.db.Exec("DELETE FROM monitors WHERE id = ?", id)
 }
 
+// GetMonitor fetches a single monitor directly from MySQL by ID.
+func (m *MySQLSync) GetMonitor(id string) (*models.Monitor, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	var mon models.Monitor
+	var lastChecked sql.NullTime
+	var userID, category, notifs, cronExpr, headersJSON, body sql.NullString
+
+	err := m.db.QueryRow(`
+		SELECT id, user_id, name, url, method, interval_val, interval_seconds, interval_label,
+		       cron_expr, status, category, notifications, headers_json, body,
+		       expected_status, timeout_sec, last_status, last_latency_ms, last_checked_at,
+		       uptime_pct, total_pings, failed_pings, consecutive_fails, created_at, updated_at
+		FROM monitors
+		WHERE id = ?
+		LIMIT 1`, id,
+	).Scan(
+		&mon.ID, &userID, &mon.Name, &mon.URL, &mon.Method, &mon.Interval, &mon.IntervalSeconds, &mon.IntervalLabel,
+		&cronExpr, &mon.Status, &category, &notifs, &headersJSON, &body,
+		&mon.ExpectedStatus, &mon.Timeout, &mon.LastStatus, &mon.LastLatency, &lastChecked,
+		&mon.Uptime, &mon.TotalPings, &mon.FailedPings, &mon.ConsecutiveFails, &mon.CreatedAt, &mon.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if userID.Valid {
+		mon.UserID = userID.String
+	}
+	if category.Valid {
+		mon.Category = category.String
+	}
+	if notifs.Valid {
+		mon.Notifications = notifs.String
+	}
+	if cronExpr.Valid {
+		mon.CronExpr = cronExpr.String
+	}
+	if body.Valid {
+		mon.Body = body.String
+	}
+	if headersJSON.Valid && headersJSON.String != "" {
+		_ = json.Unmarshal([]byte(headersJSON.String), &mon.Headers)
+	}
+	if lastChecked.Valid {
+		t := lastChecked.Time
+		mon.LastChecked = &t
+		mon.LastCheckedStr = "Just now"
+	}
+
+	return &mon, nil
+}
+
+// ToggleMonitorStatus switches monitor status between active and paused in MySQL.
+func (m *MySQLSync) ToggleMonitorStatus(id string) (*models.Monitor, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	mon, err := m.GetMonitor(id)
+	if err != nil || mon == nil {
+		return nil, err
+	}
+
+	newStatus := "paused"
+	if mon.Status == "paused" {
+		newStatus = "active"
+	}
+
+	now := time.Now()
+	_, err = m.db.Exec("UPDATE monitors SET status = ?, updated_at = ? WHERE id = ?", newStatus, now, id)
+	if err != nil {
+		return nil, err
+	}
+
+	mon.Status = newStatus
+	mon.UpdatedAt = now
+	return mon, nil
+}
+
 // RecordLog inserts an execution log and updates monitor telemetry in MySQL.
 func (m *MySQLSync) RecordLog(log models.ExecutionLog) {
 	if m == nil || m.db == nil {
@@ -373,10 +458,13 @@ func (m *MySQLSync) QueryLogs(monitorID string, filter string, search string, li
 
 	whereSQL := strings.Join(whereClauses, " AND ")
 
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
 	// Count total
 	countQuery := "SELECT COUNT(*) FROM execution_logs WHERE " + whereSQL
 	var total int
-	err := m.db.QueryRow(countQuery, args...).Scan(&total)
+	err := m.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -391,7 +479,7 @@ func (m *MySQLSync) QueryLogs(monitorID string, filter string, search string, li
 		LIMIT ? OFFSET ?`, whereSQL)
 
 	selectArgs := append(args, limit, offset)
-	rows, err := m.db.Query(dataQuery, selectArgs...)
+	rows, err := m.db.QueryContext(ctx, dataQuery, selectArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -431,6 +519,32 @@ func (m *MySQLSync) QueryLogs(monitorID string, filter string, search string, li
 	}
 
 	return logs, total, nil
+}
+
+// ClearLogs deletes all execution logs directly from MySQL.
+func (m *MySQLSync) ClearLogs() int {
+	if m == nil || m.db == nil {
+		return 0
+	}
+	res, err := m.db.Exec("DELETE FROM execution_logs")
+	if err != nil {
+		return 0
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected)
+}
+
+// DeleteLog deletes a single execution log directly from MySQL by ID.
+func (m *MySQLSync) DeleteLog(id string) bool {
+	if m == nil || m.db == nil {
+		return false
+	}
+	res, err := m.db.Exec("DELETE FROM execution_logs WHERE id = ?", id)
+	if err != nil {
+		return false
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0
 }
 
 
@@ -628,6 +742,59 @@ func (m *MySQLSync) DeleteBatcher(id string) {
 	m.db.Exec("DELETE FROM batchers WHERE id = ?", id)
 }
 
+// GetBatcher fetches a single batch worker directly from MySQL by ID.
+func (m *MySQLSync) GetBatcher(id string) (*models.Batcher, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	var b models.Batcher
+	var duration, recs, queue, desc sql.NullString
+	err := m.db.QueryRow(`
+		SELECT id, name, job_key, schedule, cron_expr, status, concurrency,
+		       last_run, duration, records_processed, target_queue, description
+		FROM batchers
+		WHERE id = ?
+		LIMIT 1`, id,
+	).Scan(
+		&b.ID, &b.Name, &b.JobKey, &b.Schedule, &b.CronExpr, &b.Status,
+		&b.Concurrency, &b.LastRun, &duration, &recs, &queue, &desc,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if duration.Valid {
+		b.Duration = duration.String
+	}
+	if recs.Valid {
+		b.RecordsProcessed = recs.String
+	}
+	if queue.Valid {
+		b.TargetQueue = queue.String
+	}
+	if desc.Valid {
+		b.Description = desc.String
+	}
+	b.LastRunFormatted = b.LastRun.Format("15:04:05")
+	return &b, nil
+}
+
+// TriggerBatcher updates last_run for a batcher directly in MySQL.
+func (m *MySQLSync) TriggerBatcher(id string) (*models.Batcher, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	now := time.Now()
+	_, err := m.db.Exec("UPDATE batchers SET last_run = ? WHERE id = ?", now, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return m.GetBatcher(id)
+}
+
 // LoadIncidents fetches all incidents from MySQL.
 func (m *MySQLSync) LoadIncidents() ([]models.Incident, error) {
 	if m == nil || m.db == nil {
@@ -729,4 +896,155 @@ func (m *MySQLSync) DeleteIncident(id string) {
 		return
 	}
 	m.db.Exec("DELETE FROM incidents WHERE id = ?", id)
+}
+
+// GetIncident fetches a single incident directly from MySQL by ID.
+func (m *MySQLSync) GetIncident(id string) (*models.Incident, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	var inc models.Incident
+	var monID, duration, cause, dispatchJSON sql.NullString
+	var resolvedAt sql.NullTime
+
+	err := m.db.QueryRow(`
+		SELECT id, monitor_id, title, service, url, severity, status,
+		       started_at, duration, cause, dispatched_to_json, resolved_at
+		FROM incidents
+		WHERE id = ?
+		LIMIT 1`, id,
+	).Scan(
+		&inc.ID, &monID, &inc.Title, &inc.Service, &inc.URL, &inc.Severity,
+		&inc.Status, &inc.StartedAt, &duration, &cause, &dispatchJSON, &resolvedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if monID.Valid {
+		inc.MonitorID = monID.String
+	}
+	if duration.Valid {
+		inc.Duration = duration.String
+	}
+	if cause.Valid {
+		inc.Cause = cause.String
+	}
+	if dispatchJSON.Valid && dispatchJSON.String != "" {
+		_ = json.Unmarshal([]byte(dispatchJSON.String), &inc.DispatchedTo)
+	}
+	if resolvedAt.Valid {
+		t := resolvedAt.Time
+		inc.ResolvedAt = &t
+	}
+	inc.StartedAtStr = inc.StartedAt.Format("Jan 02, 15:04")
+	return &inc, nil
+}
+
+// ResolveIncident marks an incident resolved directly in MySQL.
+func (m *MySQLSync) ResolveIncident(id string) (*models.Incident, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+
+	inc, err := m.GetIncident(id)
+	if err != nil || inc == nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	durMinutes := int(now.Sub(inc.StartedAt).Minutes())
+	durationStr := fmt.Sprintf("%dm", durMinutes)
+
+	_, err = m.db.Exec(`
+		UPDATE incidents
+		SET status = 'resolved', resolved_at = ?, duration = ?
+		WHERE id = ?`,
+		now, durationStr, id,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	inc.Status = "resolved"
+	inc.ResolvedAt = &now
+	inc.Duration = durationStr
+	return inc, nil
+}
+
+// UpdateUser modifies user details in MySQL.
+func (m *MySQLSync) UpdateUser(u models.User) error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	_, err := m.db.Exec(`
+		UPDATE users
+		SET name = ?, email = ?, updated_at = ?
+		WHERE id = ?`,
+		u.Name, u.Email, time.Now(), u.ID,
+	)
+	return err
+}
+
+// UpdatePassword updates password hash and salt for a user in MySQL.
+func (m *MySQLSync) UpdatePassword(userID, newHash, newSalt string) error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	_, err := m.db.Exec(`
+		UPDATE users
+		SET password_hash = ?, password_salt = ?, updated_at = ?
+		WHERE id = ?`,
+		newHash, newSalt, time.Now(), userID,
+	)
+	return err
+}
+
+// GetSystemStats calculates real-time system stats directly from MySQL.
+func (m *MySQLSync) GetSystemStats(activeWorkers int, startTime time.Time) (models.SystemStats, error) {
+	var totalMonitors, activeMonitors, pausedMonitors, failingMonitors int
+	var totalRuns, totalFailed, totalLatency int64
+
+	if m != nil && m.db != nil {
+		_ = m.db.QueryRow("SELECT COUNT(*) FROM monitors").Scan(&totalMonitors)
+		_ = m.db.QueryRow("SELECT COUNT(*) FROM monitors WHERE LOWER(status) = 'active'").Scan(&activeMonitors)
+		_ = m.db.QueryRow("SELECT COUNT(*) FROM monitors WHERE LOWER(status) = 'paused'").Scan(&pausedMonitors)
+		_ = m.db.QueryRow("SELECT COUNT(*) FROM monitors WHERE LOWER(status) = 'failing'").Scan(&failingMonitors)
+		_ = m.db.QueryRow("SELECT COALESCE(SUM(total_pings), 0), COALESCE(SUM(failed_pings), 0) FROM monitors").Scan(&totalRuns, &totalFailed)
+		_ = m.db.QueryRow("SELECT COALESCE(SUM(total_pings * last_latency_ms), 0) FROM monitors").Scan(&totalLatency)
+	}
+
+	uptimeSeconds := int64(time.Since(startTime).Seconds())
+	avgLatency := int64(0)
+	if totalRuns > 0 {
+		avgLatency = totalLatency / totalRuns
+	}
+
+	successRate := "100%"
+	if totalRuns > 0 {
+		sr := float64(totalRuns-totalFailed) / float64(totalRuns) * 100.0
+		if sr < 0 {
+			sr = 0
+		}
+		successRate = fmt.Sprintf("%.2f%%", sr)
+	}
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	return models.SystemStats{
+		EngineStatus:    "running",
+		UptimeSeconds:   uptimeSeconds,
+		TotalMonitors:   totalMonitors,
+		ActiveMonitors:  activeMonitors,
+		PausedMonitors:  pausedMonitors,
+		FailingMonitors: failingMonitors,
+		TotalRuns:       totalRuns,
+		SuccessRate:     successRate,
+		AvgLatencyMs:    avgLatency,
+		ActiveWorkers:   activeWorkers,
+		Goroutines:      runtime.NumGoroutine(),
+		MemoryAllocMB:   float64(mem.Alloc) / 1024 / 1024,
+	}, nil
 }

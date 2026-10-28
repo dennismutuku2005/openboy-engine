@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+
 	"openboy-engine/internal/models"
 	"openboy-engine/pkg/logger"
 )
@@ -17,10 +18,10 @@ type persistedState struct {
 	Incidents []models.Incident `json:"incidents"`
 }
 
-// Store provides thread-safe access to users, monitors, batchers, incidents, and logs.
+// Store provides direct database-driven access to users, monitors, batchers, incidents, and logs.
 type Store struct {
 	mu           sync.RWMutex
-	users        map[string]*models.User // by ID
+	users        map[string]*models.User // fallback in-memory store if MySQL is not configured
 	monitors     map[string]*models.Monitor
 	batchers     map[string]*models.Batcher
 	incidents    map[string]*models.Incident
@@ -30,13 +31,12 @@ type Store struct {
 	startTime    time.Time
 	totalRuns    int64
 	totalLatency int64
-	subscribers   map[chan models.ExecutionLog]struct{}
-	subMu         sync.RWMutex
-	mysql         *MySQLSync
-	mysqlLogQueue chan models.ExecutionLog
+	subscribers  map[chan models.ExecutionLog]struct{}
+	subMu        sync.RWMutex
+	mysql        *MySQLSync
 }
 
-// NewStore initializes a store, loading from MySQL if connected or data/openboy_state.json if available.
+// NewStore initializes a store, directly delegating to MySQL when connected.
 func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 	s := &Store{
 		users:       make(map[string]*models.User),
@@ -52,57 +52,19 @@ func NewStore(dataFile string, mysqlDB ...*MySQLSync) *Store {
 
 	if len(mysqlDB) > 0 && mysqlDB[0] != nil {
 		s.mysql = mysqlDB[0]
-		s.mysqlLogQueue = make(chan models.ExecutionLog, 256)
-		go s.startMySQLLogWorker()
+
 		// Clean up any legacy seeded/demo monitors and fake logs from MySQL
 		if err := s.mysql.CleanLegacySeed(); err != nil {
 			logger.Warn("Failed to clean legacy seed from MySQL: %v", err)
 		}
-		// Seed MySQL if empty and load state directly from MySQL
+		// Seed MySQL if empty
 		if err := s.mysql.SeedIfEmpty(); err != nil {
 			logger.Warn("Failed to seed MySQL: %v", err)
 		}
-		if users, err := s.mysql.LoadUsers(); err == nil && len(users) > 0 {
-			logger.Info("Loaded %d users directly from MySQL database", len(users))
-			for _, u := range users {
-				copyU := u
-				s.users[u.ID] = &copyU
-			}
-		}
-		if mons, err := s.mysql.LoadMonitors(); err == nil && len(mons) > 0 {
-			logger.Info("Loaded %d monitors directly from MySQL database", len(mons))
-			for _, m := range mons {
-				if strings.Contains(m.URL, "openboy.dev") || strings.Contains(m.URL, ".internal") {
-					continue
-				}
-				copyM := m
-				s.monitors[m.ID] = &copyM
-				s.totalRuns += m.TotalPings
-				s.totalLatency += m.TotalPings * m.LastLatency
-			}
-		}
-		if batchers, err := s.mysql.LoadBatchers(); err == nil && len(batchers) > 0 {
-			logger.Info("Loaded %d batchers directly from MySQL database", len(batchers))
-			for _, b := range batchers {
-				copyB := b
-				s.batchers[b.ID] = &copyB
-			}
-		}
-		if incidents, err := s.mysql.LoadIncidents(); err == nil && len(incidents) > 0 {
-			logger.Info("Loaded %d incidents directly from MySQL database", len(incidents))
-			for _, inc := range incidents {
-				copyInc := inc
-				s.incidents[inc.ID] = &copyInc
-			}
-		}
-		if logs, err := s.mysql.LoadRecentLogs(1000); err == nil && len(logs) > 0 {
-			logger.Info("Loaded %d execution logs directly from MySQL database", len(logs))
-			s.logs = logs
-		}
 	}
 
-	// Always ensure default admin user is seeded if users map is empty
-	if len(s.users) == 0 {
+	// Fallback admin user if running without MySQL
+	if s.mysql == nil && len(s.users) == 0 {
 		s.bootstrapUsers()
 	}
 
@@ -154,28 +116,21 @@ func (s *Store) SaveToFile() error {
 }
 
 // ==========================================
-// USER OPERATIONS
+// USER OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
-// GetUserByID retrieves a user by ID.
+// GetUserByID retrieves a user by ID directly from MySQL.
 func (s *Store) GetUserByID(id string) (*models.User, bool) {
 	if s.mysql != nil {
-		if u, err := s.mysql.GetUserByID(id); err == nil && u != nil {
-			s.mu.Lock()
-			s.users[u.ID] = u
-			s.mu.Unlock()
+		u, err := s.mysql.GetUserByID(id)
+		if err == nil && u != nil {
 			return u, true
 		}
+		return nil, false
 	}
 
 	s.mu.RLock()
-	if len(s.users) == 0 {
-		s.mu.RUnlock()
-		s.bootstrapUsers()
-		s.mu.RLock()
-	}
 	defer s.mu.RUnlock()
-
 	u, ok := s.users[id]
 	if !ok {
 		return nil, false
@@ -184,25 +139,18 @@ func (s *Store) GetUserByID(id string) (*models.User, bool) {
 	return &copyU, true
 }
 
-// GetUserByUsernameOrEmail finds a user by username or email (case-insensitive).
+// GetUserByUsernameOrEmail finds a user by username or email directly from MySQL.
 func (s *Store) GetUserByUsernameOrEmail(identifier string) (*models.User, bool) {
 	if s.mysql != nil {
-		if u, err := s.mysql.GetUserByUsernameOrEmail(identifier); err == nil && u != nil {
-			s.mu.Lock()
-			s.users[u.ID] = u
-			s.mu.Unlock()
+		u, err := s.mysql.GetUserByUsernameOrEmail(identifier)
+		if err == nil && u != nil {
 			return u, true
 		}
+		return nil, false
 	}
 
 	s.mu.RLock()
-	if len(s.users) == 0 {
-		s.mu.RUnlock()
-		s.bootstrapUsers()
-		s.mu.RLock()
-	}
 	defer s.mu.RUnlock()
-
 	lower := strings.ToLower(strings.TrimSpace(identifier))
 	for _, u := range s.users {
 		if strings.ToLower(u.Username) == lower || strings.ToLower(u.Email) == lower {
@@ -213,20 +161,18 @@ func (s *Store) GetUserByUsernameOrEmail(identifier string) (*models.User, bool)
 	return nil, false
 }
 
-// GetUserByAPIKey finds a user by API key.
+// GetUserByAPIKey finds a user by API key directly from MySQL.
 func (s *Store) GetUserByAPIKey(key string) (*models.User, bool) {
 	if s.mysql != nil {
-		if u, err := s.mysql.GetUserByAPIKey(key); err == nil && u != nil {
-			s.mu.Lock()
-			s.users[u.ID] = u
-			s.mu.Unlock()
+		u, err := s.mysql.GetUserByAPIKey(key)
+		if err == nil && u != nil {
 			return u, true
 		}
+		return nil, false
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	for _, u := range s.users {
 		if u.APIKey == key {
 			copyU := *u
@@ -236,11 +182,22 @@ func (s *Store) GetUserByAPIKey(key string) (*models.User, bool) {
 	return nil, false
 }
 
-// CreateUser inserts a new user.
+// CreateUser inserts a new user directly into MySQL or fallback store.
 func (s *Store) CreateUser(u models.User) (*models.User, error) {
+	if u.ID == "" {
+		u.ID = fmt.Sprintf("usr-%d", time.Now().UnixNano())
+	}
+	now := time.Now()
+	u.CreatedAt = now
+	u.UpdatedAt = now
+
+	if s.mysql != nil {
+		s.mysql.SaveUser(u)
+		return &u, nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	lowerUser := strings.ToLower(strings.TrimSpace(u.Username))
 	lowerEmail := strings.ToLower(strings.TrimSpace(u.Email))
 
@@ -253,26 +210,19 @@ func (s *Store) CreateUser(u models.User) (*models.User, error) {
 		}
 	}
 
-	if u.ID == "" {
-		u.ID = fmt.Sprintf("usr-%d", time.Now().UnixNano())
-	}
-	now := time.Now()
-	u.CreatedAt = now
-	u.UpdatedAt = now
-
 	s.users[u.ID] = &u
 	copyU := u
-	if s.mysql != nil {
-		go s.mysql.SaveUser(copyU)
-	}
 	return &copyU, nil
 }
 
-// UpdateUser modifies user profile fields (name, email).
+// UpdateUser modifies user profile fields directly in MySQL or fallback store.
 func (s *Store) UpdateUser(u models.User) bool {
+	if s.mysql != nil {
+		return s.mysql.UpdateUser(u) == nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	existing, ok := s.users[u.ID]
 	if !ok {
 		return false
@@ -284,18 +234,17 @@ func (s *Store) UpdateUser(u models.User) bool {
 		existing.Email = u.Email
 	}
 	existing.UpdatedAt = time.Now()
-	copyU := *existing
-	if s.mysql != nil {
-		go s.mysql.SaveUser(copyU)
-	}
 	return true
 }
 
-// UpdatePassword sets a new password hash and salt for a user.
+// UpdatePassword sets a new password hash directly in MySQL or fallback store.
 func (s *Store) UpdatePassword(userID, newHash, newSalt string) bool {
+	if s.mysql != nil {
+		return s.mysql.UpdatePassword(userID, newHash, newSalt) == nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	user, ok := s.users[userID]
 	if !ok {
 		return false
@@ -303,22 +252,23 @@ func (s *Store) UpdatePassword(userID, newHash, newSalt string) bool {
 	user.PasswordHash = newHash
 	user.PasswordSalt = newSalt
 	user.UpdatedAt = time.Now()
-	copyU := *user
-	if s.mysql != nil {
-		go s.mysql.SaveUser(copyU)
-	}
 	return true
 }
 
 // ==========================================
-// MONITOR OPERATIONS
+// MONITOR OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
-// GetAllMonitors returns a slice copy of all registered monitors.
+// GetAllMonitors returns all registered monitors directly from MySQL or fallback store.
 func (s *Store) GetAllMonitors() []models.Monitor {
+	if s.mysql != nil {
+		if mons, err := s.mysql.LoadMonitors(); err == nil {
+			return mons
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	result := make([]models.Monitor, 0, len(s.monitors))
 	for _, m := range s.monitors {
 		result = append(result, *m)
@@ -326,11 +276,17 @@ func (s *Store) GetAllMonitors() []models.Monitor {
 	return result
 }
 
-// GetMonitor retrieves a single monitor by ID.
+// GetMonitor retrieves a single monitor directly from MySQL or fallback store.
 func (s *Store) GetMonitor(id string) (*models.Monitor, bool) {
+	if s.mysql != nil {
+		if m, err := s.mysql.GetMonitor(id); err == nil && m != nil {
+			return m, true
+		}
+		return nil, false
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	m, ok := s.monitors[id]
 	if !ok {
 		return nil, false
@@ -339,11 +295,8 @@ func (s *Store) GetMonitor(id string) (*models.Monitor, bool) {
 	return &copyM, true
 }
 
-// CreateMonitor creates a new monitor.
+// CreateMonitor creates a new monitor directly in MySQL or fallback store.
 func (s *Store) CreateMonitor(m models.Monitor) models.Monitor {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if m.ID == "" {
 		m.ID = fmt.Sprintf("mon-%d", time.Now().UnixNano())
 	}
@@ -357,24 +310,45 @@ func (s *Store) CreateMonitor(m models.Monitor) models.Monitor {
 	m.CreatedAt = now
 	m.UpdatedAt = now
 
-	s.monitors[m.ID] = &m
 	if s.mysql != nil {
-		go s.mysql.SaveMonitor(m)
+		s.mysql.SaveMonitor(m)
+		return m
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.monitors[m.ID] = &m
 	return m
 }
 
-// UpdateMonitor updates an existing monitor.
+// UpdateMonitor updates a monitor directly in MySQL or fallback store.
 func (s *Store) UpdateMonitor(m models.Monitor) bool {
+	if s.mysql != nil {
+		existing, err := s.mysql.GetMonitor(m.ID)
+		if err != nil || existing == nil {
+			return false
+		}
+		m.CreatedAt = existing.CreatedAt
+		m.TotalPings = existing.TotalPings
+		m.FailedPings = existing.FailedPings
+		m.ConsecutiveFails = existing.ConsecutiveFails
+		m.Uptime = existing.Uptime
+		m.History = existing.History
+		m.LastStatus = existing.LastStatus
+		m.LastLatency = existing.LastLatency
+		m.LastChecked = existing.LastChecked
+		m.LastCheckedStr = existing.LastCheckedStr
+		m.UpdatedAt = time.Now()
+		s.mysql.SaveMonitor(m)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	existing, ok := s.monitors[m.ID]
 	if !ok {
 		return false
 	}
-
-	// Preserve stats
 	m.CreatedAt = existing.CreatedAt
 	m.TotalPings = existing.TotalPings
 	m.FailedPings = existing.FailedPings
@@ -386,34 +360,38 @@ func (s *Store) UpdateMonitor(m models.Monitor) bool {
 	m.LastChecked = existing.LastChecked
 	m.LastCheckedStr = existing.LastCheckedStr
 	m.UpdatedAt = time.Now()
-
 	s.monitors[m.ID] = &m
-	if s.mysql != nil {
-		go s.mysql.SaveMonitor(m)
-	}
 	return true
 }
 
-// DeleteMonitor deletes a monitor by ID.
+// DeleteMonitor deletes a monitor directly from MySQL or fallback store.
 func (s *Store) DeleteMonitor(id string) bool {
+	if s.mysql != nil {
+		s.mysql.DeleteMonitor(id)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if _, ok := s.monitors[id]; !ok {
 		return false
 	}
 	delete(s.monitors, id)
-	if s.mysql != nil {
-		go s.mysql.DeleteMonitor(id)
-	}
 	return true
 }
 
-// ToggleMonitorStatus switches status between active and paused.
+// ToggleMonitorStatus switches status directly in MySQL or fallback store.
 func (s *Store) ToggleMonitorStatus(id string) (*models.Monitor, bool) {
+	if s.mysql != nil {
+		mon, err := s.mysql.ToggleMonitorStatus(id)
+		if err == nil && mon != nil {
+			return mon, true
+		}
+		return nil, false
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	m, ok := s.monitors[id]
 	if !ok {
 		return nil, false
@@ -425,154 +403,81 @@ func (s *Store) ToggleMonitorStatus(id string) (*models.Monitor, bool) {
 	}
 	m.UpdatedAt = time.Now()
 	copyM := *m
-	if s.mysql != nil {
-		go s.mysql.SaveMonitor(copyM)
-	}
 	return &copyM, true
 }
 
-// RecordPingResult records the execution outcome and updates monitor stats.
+// RecordPingResult records the execution outcome and updates monitor stats in MySQL.
 func (s *Store) RecordPingResult(log models.ExecutionLog) {
-	s.mu.Lock()
-	m, ok := s.monitors[log.MonitorID]
-	if ok {
-		m.TotalPings++
-		m.LastStatus = log.Status
-		m.LastLatency = log.Latency
-		now := time.Now()
-		m.LastChecked = &now
-		m.LastCheckedStr = "Just now"
-		m.UpdatedAt = now
-
+	// Sync directly to MySQL
+	if s.mysql != nil {
+		s.mysql.RecordLog(log)
 		if !log.OK {
-			m.FailedPings++
-			m.ConsecutiveFails++
-			if m.ConsecutiveFails >= 2 {
-				m.Status = "failing"
+			newInc := models.Incident{
+				ID:           fmt.Sprintf("inc-%d", time.Now().UnixNano()),
+				MonitorID:    log.MonitorID,
+				Title:        fmt.Sprintf("Outage detected: %s", log.MonitorName),
+				Service:      log.MonitorName,
+				URL:          log.URL,
+				Severity:     "P2 - High",
+				Status:       "investigating",
+				StartedAt:    time.Now(),
+				StartedAtStr: "Just now",
+				Duration:     "Ongoing",
+				Cause:        log.Error,
+				DispatchedTo: []string{"Engine Internal", "Default Webhook"},
 			}
-
-			// Automatically create an incident if no active incident is currently open for this monitor
-			var openInc *models.Incident
-			for _, inc := range s.incidents {
-				if inc.MonitorID == m.ID && inc.Status == "investigating" {
-					openInc = inc
-					break
-				}
-			}
-
-			if openInc == nil {
-				severity := "P2 - High"
-				if m.ConsecutiveFails >= 2 || log.Status >= 500 || log.Status == 0 {
-					severity = "P1 - Critical"
-				} else if log.Status >= 400 {
-					severity = "P3 - Moderate"
-				}
-
-				cause := log.Error
-				if cause == "" {
-					cause = fmt.Sprintf("HTTP %d %s", log.Status, log.StatusText)
-				}
-
-				newInc := models.Incident{
-					ID:           fmt.Sprintf("inc-%d", time.Now().UnixNano()),
-					MonitorID:    m.ID,
-					Title:        fmt.Sprintf("Outage detected: %s", m.Name),
-					Service:      m.Name,
-					URL:          m.URL,
-					Severity:     severity,
-					Status:       "investigating",
-					StartedAt:    now,
-					StartedAtStr: "Just now",
-					Duration:     "Ongoing",
-					Cause:        cause,
-					DispatchedTo: []string{"Engine Internal", "Default Webhook"},
-				}
-				s.incidents[newInc.ID] = &newInc
-				if s.mysql != nil {
-					go s.mysql.SaveIncident(newInc)
-				}
-			}
-		} else {
-			m.ConsecutiveFails = 0
-			if m.Status == "failing" {
-				m.Status = "active"
-			}
-
-			// Automatically resolve any open incident when monitor recovers
-			for _, inc := range s.incidents {
-				if inc.MonitorID == m.ID && inc.Status == "investigating" {
-					inc.Status = "resolved"
-					resTime := now
-					inc.ResolvedAt = &resTime
-					durSec := int(now.Sub(inc.StartedAt).Seconds())
-					if durSec < 60 {
-						inc.Duration = fmt.Sprintf("%ds", durSec)
-					} else {
-						inc.Duration = fmt.Sprintf("%dm", durSec/60)
-					}
-					copyInc := *inc
-					if s.mysql != nil {
-						go s.mysql.SaveIncident(copyInc)
-					}
-				}
-			}
-		}
-
-		// Calculate uptime %
-		if m.TotalPings > 0 {
-			success := float64(m.TotalPings-m.FailedPings) / float64(m.TotalPings) * 100.0
-			m.Uptime = fmt.Sprintf("%.2f%%", success)
-		}
-
-		// Update history sparkline (keep last 5)
-		histItem := models.HistoryItem{
-			Status:  log.Status,
-			Latency: log.Latency,
-			Time:    "Just now",
-			OK:      log.OK,
-		}
-		m.History = append([]models.HistoryItem{histItem}, m.History...)
-		if len(m.History) > 5 {
-			m.History = m.History[:5]
+			s.mysql.SaveIncident(newInc)
 		}
 	}
-
-	s.totalRuns++
-	s.totalLatency += log.Latency
-
-	// Prepend log to ring buffer with zero heap allocation when buffer is full
-	if len(s.logs) >= s.maxLogs {
-		copy(s.logs[1:], s.logs[:s.maxLogs-1])
-		s.logs[0] = log
-	} else {
-		s.logs = append([]models.ExecutionLog{log}, s.logs...)
-	}
-	s.mu.Unlock()
 
 	// Notify SSE subscribers
 	s.broadcastLog(log)
 
-	// Sync to MySQL via bounded channel (prevents goroutine leaks during network latency)
-	if s.mysqlLogQueue != nil {
-		select {
-		case s.mysqlLogQueue <- log:
-		default:
-			// Dropped if worker queue is backlogged
+	// In-memory fallback if no MySQL configured
+	if s.mysql == nil {
+		s.mu.Lock()
+		m, ok := s.monitors[log.MonitorID]
+		if ok {
+			m.TotalPings++
+			m.LastStatus = log.Status
+			m.LastLatency = log.Latency
+			now := time.Now()
+			m.LastChecked = &now
+			m.LastCheckedStr = "Just now"
+			m.UpdatedAt = now
+
+			if !log.OK {
+				m.FailedPings++
+				m.ConsecutiveFails++
+				if m.ConsecutiveFails >= 2 {
+					m.Status = "failing"
+				}
+			} else {
+				m.ConsecutiveFails = 0
+				if m.Status == "failing" {
+					m.Status = "active"
+				}
+			}
 		}
-	}
-}
 
-func (s *Store) startMySQLLogWorker() {
-	for log := range s.mysqlLogQueue {
-		s.mysql.RecordLog(log)
+		s.totalRuns++
+		s.totalLatency += log.Latency
+
+		if len(s.logs) >= s.maxLogs {
+			copy(s.logs[1:], s.logs[:s.maxLogs-1])
+			s.logs[0] = log
+		} else {
+			s.logs = append([]models.ExecutionLog{log}, s.logs...)
+		}
+		s.mu.Unlock()
 	}
 }
 
 // ==========================================
-// LOG OPERATIONS
+// LOG OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
-// GetLogs returns paginated and filtered execution logs, reading from MySQL when connected.
+// GetLogs returns paginated and filtered execution logs, reading directly from MySQL.
 func (s *Store) GetLogs(limit, offset int, filter, search string, monitorID ...string) ([]models.ExecutionLog, int) {
 	targetMonID := ""
 	if len(monitorID) > 0 {
@@ -636,21 +541,27 @@ func (s *Store) GetLogs(limit, offset int, filter, search string, monitorID ...s
 	return res, total
 }
 
-// ClearLogs empties the execution logs ring buffer.
+// ClearLogs empties the execution logs directly in MySQL or fallback store.
 func (s *Store) ClearLogs() int {
+	if s.mysql != nil {
+		return s.mysql.ClearLogs()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	count := len(s.logs)
 	s.logs = make([]models.ExecutionLog, 0, 1000)
 	return count
 }
 
-// DeleteLog removes a single log by ID.
+// DeleteLog removes a single log directly in MySQL or fallback store.
 func (s *Store) DeleteLog(id string) bool {
+	if s.mysql != nil {
+		return s.mysql.DeleteLog(id)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	for i, l := range s.logs {
 		if l.ID == id {
 			s.logs = append(s.logs[:i], s.logs[i+1:]...)
@@ -661,14 +572,19 @@ func (s *Store) DeleteLog(id string) bool {
 }
 
 // ==========================================
-// BATCHER OPERATIONS
+// BATCHER OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
-// GetAllBatchers returns all batch workers.
+// GetAllBatchers returns all batch workers directly from MySQL or fallback store.
 func (s *Store) GetAllBatchers() []models.Batcher {
+	if s.mysql != nil {
+		if batchers, err := s.mysql.LoadBatchers(); err == nil {
+			return batchers
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	res := make([]models.Batcher, 0, len(s.batchers))
 	for _, b := range s.batchers {
 		res = append(res, *b)
@@ -676,11 +592,17 @@ func (s *Store) GetAllBatchers() []models.Batcher {
 	return res
 }
 
-// GetBatcher returns a single batcher by ID.
+// GetBatcher returns a single batcher directly from MySQL or fallback store.
 func (s *Store) GetBatcher(id string) (*models.Batcher, bool) {
+	if s.mysql != nil {
+		if b, err := s.mysql.GetBatcher(id); err == nil && b != nil {
+			return b, true
+		}
+		return nil, false
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	b, ok := s.batchers[id]
 	if !ok {
 		return nil, false
@@ -689,11 +611,8 @@ func (s *Store) GetBatcher(id string) (*models.Batcher, bool) {
 	return &copyB, true
 }
 
-// CreateBatcher creates a new batcher.
+// CreateBatcher creates a new batcher directly in MySQL or fallback store.
 func (s *Store) CreateBatcher(b models.Batcher) models.Batcher {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if b.ID == "" {
 		b.ID = fmt.Sprintf("batch-%d", time.Now().UnixNano())
 	}
@@ -703,18 +622,32 @@ func (s *Store) CreateBatcher(b models.Batcher) models.Batcher {
 	b.LastRun = time.Now()
 	b.LastRunFormatted = "Never"
 
-	s.batchers[b.ID] = &b
 	if s.mysql != nil {
-		go s.mysql.SaveBatcher(b)
+		s.mysql.SaveBatcher(b)
+		return b
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batchers[b.ID] = &b
 	return b
 }
 
-// UpdateBatcher updates an existing batcher.
+// UpdateBatcher updates an existing batcher directly in MySQL or fallback store.
 func (s *Store) UpdateBatcher(b models.Batcher) bool {
+	if s.mysql != nil {
+		existing, err := s.mysql.GetBatcher(b.ID)
+		if err != nil || existing == nil {
+			return false
+		}
+		b.LastRun = existing.LastRun
+		b.LastRunFormatted = existing.LastRunFormatted
+		s.mysql.SaveBatcher(b)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	existing, ok := s.batchers[b.ID]
 	if !ok {
 		return false
@@ -722,32 +655,37 @@ func (s *Store) UpdateBatcher(b models.Batcher) bool {
 	b.LastRun = existing.LastRun
 	b.LastRunFormatted = existing.LastRunFormatted
 	s.batchers[b.ID] = &b
-	if s.mysql != nil {
-		go s.mysql.SaveBatcher(b)
-	}
 	return true
 }
 
-// DeleteBatcher removes a batcher.
+// DeleteBatcher removes a batcher directly from MySQL or fallback store.
 func (s *Store) DeleteBatcher(id string) bool {
+	if s.mysql != nil {
+		s.mysql.DeleteBatcher(id)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if _, ok := s.batchers[id]; !ok {
 		return false
 	}
 	delete(s.batchers, id)
-	if s.mysql != nil {
-		go s.mysql.DeleteBatcher(id)
-	}
 	return true
 }
 
-// TriggerBatcher manually triggers a batch worker run.
+// TriggerBatcher manually triggers a batch worker run directly in MySQL or fallback store.
 func (s *Store) TriggerBatcher(id string) (*models.Batcher, bool) {
+	if s.mysql != nil {
+		b, err := s.mysql.TriggerBatcher(id)
+		if err == nil && b != nil {
+			return b, true
+		}
+		return nil, false
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	b, ok := s.batchers[id]
 	if !ok {
 		return nil, false
@@ -755,21 +693,23 @@ func (s *Store) TriggerBatcher(id string) (*models.Batcher, bool) {
 	b.LastRun = time.Now()
 	b.LastRunFormatted = "Just now"
 	copyB := *b
-	if s.mysql != nil {
-		go s.mysql.SaveBatcher(copyB)
-	}
 	return &copyB, true
 }
 
 // ==========================================
-// INCIDENT OPERATIONS
+// INCIDENT OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
-// GetAllIncidents returns all recorded incidents.
+// GetAllIncidents returns all recorded incidents directly from MySQL or fallback store.
 func (s *Store) GetAllIncidents() []models.Incident {
+	if s.mysql != nil {
+		if incidents, err := s.mysql.LoadIncidents(); err == nil {
+			return incidents
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	res := make([]models.Incident, 0, len(s.incidents))
 	for _, inc := range s.incidents {
 		res = append(res, *inc)
@@ -777,11 +717,17 @@ func (s *Store) GetAllIncidents() []models.Incident {
 	return res
 }
 
-// GetIncident returns a single incident by ID.
+// GetIncident returns a single incident directly from MySQL or fallback store.
 func (s *Store) GetIncident(id string) (*models.Incident, bool) {
+	if s.mysql != nil {
+		if inc, err := s.mysql.GetIncident(id); err == nil && inc != nil {
+			return inc, true
+		}
+		return nil, false
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	inc, ok := s.incidents[id]
 	if !ok {
 		return nil, false
@@ -790,11 +736,8 @@ func (s *Store) GetIncident(id string) (*models.Incident, bool) {
 	return &copyInc, true
 }
 
-// CreateIncident adds a new incident to the system.
+// CreateIncident adds a new incident directly in MySQL or fallback store.
 func (s *Store) CreateIncident(inc models.Incident) models.Incident {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if inc.ID == "" {
 		inc.ID = fmt.Sprintf("inc-%d", time.Now().UnixNano())
 	}
@@ -806,18 +749,32 @@ func (s *Store) CreateIncident(inc models.Incident) models.Incident {
 	inc.StartedAtStr = "Just now"
 	inc.Duration = "Ongoing"
 
-	s.incidents[inc.ID] = &inc
 	if s.mysql != nil {
-		go s.mysql.SaveIncident(inc)
+		s.mysql.SaveIncident(inc)
+		return inc
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.incidents[inc.ID] = &inc
 	return inc
 }
 
-// UpdateIncident updates an existing incident.
+// UpdateIncident updates an existing incident directly in MySQL or fallback store.
 func (s *Store) UpdateIncident(inc models.Incident) bool {
+	if s.mysql != nil {
+		existing, err := s.mysql.GetIncident(inc.ID)
+		if err != nil || existing == nil {
+			return false
+		}
+		inc.StartedAt = existing.StartedAt
+		inc.StartedAtStr = existing.StartedAtStr
+		s.mysql.SaveIncident(inc)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	existing, ok := s.incidents[inc.ID]
 	if !ok {
 		return false
@@ -825,17 +782,21 @@ func (s *Store) UpdateIncident(inc models.Incident) bool {
 	inc.StartedAt = existing.StartedAt
 	inc.StartedAtStr = existing.StartedAtStr
 	s.incidents[inc.ID] = &inc
-	if s.mysql != nil {
-		go s.mysql.SaveIncident(inc)
-	}
 	return true
 }
 
-// ResolveIncident marks an incident as resolved.
+// ResolveIncident marks an incident as resolved directly in MySQL or fallback store.
 func (s *Store) ResolveIncident(id string) (*models.Incident, bool) {
+	if s.mysql != nil {
+		inc, err := s.mysql.ResolveIncident(id)
+		if err == nil && inc != nil {
+			return inc, true
+		}
+		return nil, false
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	inc, ok := s.incidents[id]
 	if !ok {
 		return nil, false
@@ -845,33 +806,37 @@ func (s *Store) ResolveIncident(id string) (*models.Incident, bool) {
 	inc.ResolvedAt = &now
 	inc.Duration = fmt.Sprintf("%dm", int(now.Sub(inc.StartedAt).Minutes()))
 	copyInc := *inc
-	if s.mysql != nil {
-		go s.mysql.SaveIncident(copyInc)
-	}
 	return &copyInc, true
 }
 
-// DeleteIncident removes an incident.
+// DeleteIncident removes an incident directly from MySQL or fallback store.
 func (s *Store) DeleteIncident(id string) bool {
+	if s.mysql != nil {
+		s.mysql.DeleteIncident(id)
+		return true
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if _, ok := s.incidents[id]; !ok {
 		return false
 	}
 	delete(s.incidents, id)
-	if s.mysql != nil {
-		go s.mysql.DeleteIncident(id)
-	}
 	return true
 }
 
 // ==========================================
-// TELEMETRY & METRICS
+// TELEMETRY & METRICS (DIRECT DATABASE)
 // ==========================================
 
-// GetSystemStats calculates real-time telemetry metrics.
+// GetSystemStats calculates real-time telemetry metrics directly from MySQL or fallback store.
 func (s *Store) GetSystemStats(activeWorkers int) models.SystemStats {
+	if s.mysql != nil {
+		if stats, err := s.mysql.GetSystemStats(activeWorkers, s.startTime); err == nil {
+			return stats
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -925,11 +890,15 @@ func (s *Store) GetSystemStats(activeWorkers int) models.SystemStats {
 		AvgLatencyMs:    avgLatency,
 		ActiveWorkers:   activeWorkers,
 		Goroutines:      runtime.NumGoroutine(),
-		MemoryAllocMB:   float64(m.Alloc) / 1024.0 / 1024.0,
+		MemoryAllocMB:   float64(m.Alloc) / 1024 / 1024,
 	}
 }
 
-// SubscribeLogStream adds a channel to receive live execution logs.
+// ==========================================
+// SSE STREAMING
+// ==========================================
+
+// SubscribeLogStream registers a listener channel for realtime SSE broadcast.
 func (s *Store) SubscribeLogStream() (chan models.ExecutionLog, func()) {
 	ch := make(chan models.ExecutionLog, 64)
 	s.subMu.Lock()
@@ -942,7 +911,6 @@ func (s *Store) SubscribeLogStream() (chan models.ExecutionLog, func()) {
 		close(ch)
 		s.subMu.Unlock()
 	}
-
 	return ch, unsubscribe
 }
 
@@ -954,7 +922,7 @@ func (s *Store) broadcastLog(log models.ExecutionLog) {
 		select {
 		case ch <- log:
 		default:
-			// Dropping if subscriber is too slow to prevent blocking
+			// Non-blocking drop if consumer client is lagging
 		}
 	}
 }

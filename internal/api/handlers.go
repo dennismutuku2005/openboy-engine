@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"openboy-engine/internal/engine"
 	"openboy-engine/internal/models"
 	"openboy-engine/internal/store"
@@ -33,16 +34,8 @@ func NewAPI(s *store.Store, sc *engine.Scheduler, pool *engine.WorkerPool) *API 
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if data != nil {
-		json.NewEncoder(w).Encode(data)
-	}
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
+func writeError(c *gin.Context, status int, message string) {
+	c.JSON(status, gin.H{"error": message})
 }
 
 // ==========================================
@@ -50,21 +43,21 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // ==========================================
 
 // LoginHandler validates credentials and returns a JWT token.
-func (a *API) LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) LoginHandler(c *gin.Context) {
 	var req models.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid login payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid login payload")
 		return
 	}
 
 	user, ok := a.store.GetUserByUsernameOrEmail(req.Username)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "Invalid username or password")
+		writeError(c, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
 	if !auth.CheckPassword(req.Password, user.PasswordHash, user.PasswordSalt) {
-		writeError(w, http.StatusUnauthorized, "Invalid username or password")
+		writeError(c, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
@@ -82,32 +75,32 @@ func (a *API) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		Role:     user.Role,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to generate authentication token")
+		writeError(c, http.StatusInternalServerError, "Failed to generate authentication token")
 		return
 	}
 
 	logger.Info("User logged in successfully: %s (%s)", user.Username, user.Email)
-	writeJSON(w, http.StatusOK, models.LoginResponse{
+	c.JSON(http.StatusOK, models.LoginResponse{
 		Token: token,
 		User:  user.ToProfile(),
 	})
 }
 
 // RegisterHandler registers a new account and returns a JWT token.
-func (a *API) RegisterHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) RegisterHandler(c *gin.Context) {
 	var req models.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid registration payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid registration payload")
 		return
 	}
 
 	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "Username, email, and password are required")
+		writeError(c, http.StatusBadRequest, "Username, email, and password are required")
 		return
 	}
 
 	if len(req.Password) < 6 {
-		writeError(w, http.StatusBadRequest, "Password must be at least 6 characters")
+		writeError(c, http.StatusBadRequest, "Password must be at least 6 characters")
 		return
 	}
 
@@ -131,7 +124,7 @@ func (a *API) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	created, err := a.store.CreateUser(newUser)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeError(c, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -143,85 +136,85 @@ func (a *API) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Role:     created.Role,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Account created, but token generation failed")
+		writeError(c, http.StatusInternalServerError, "Account created, but token generation failed")
 		return
 	}
 
 	logger.Info("New user registered: %s (%s)", created.Username, created.Email)
-	writeJSON(w, http.StatusCreated, models.LoginResponse{
+	c.JSON(http.StatusCreated, models.LoginResponse{
 		Token: token,
 		User:  created.ToProfile(),
 	})
 }
 
 // MeHandler returns the authenticated user's profile.
-func (a *API) MeHandler(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r.Context())
+func (a *API) MeHandler(c *gin.Context) {
+	user, ok := GetUserFromContext(c)
 	if !ok || user == nil {
-		writeError(w, http.StatusUnauthorized, "Not authenticated")
+		writeError(c, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
-	writeJSON(w, http.StatusOK, user.ToProfile())
+	c.JSON(http.StatusOK, user.ToProfile())
 }
 
 // UpdateProfileHandler modifies user profile info (name, email).
-func (a *API) UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r.Context())
+func (a *API) UpdateProfileHandler(c *gin.Context) {
+	user, ok := GetUserFromContext(c)
 	if !ok || user == nil {
-		writeError(w, http.StatusUnauthorized, "Not authenticated")
+		writeError(c, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
 
 	var req models.UpdateProfileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
 	user.Name = req.Name
 	user.Email = req.Email
 	if !a.store.UpdateUser(*user) {
-		writeError(w, http.StatusInternalServerError, "Failed to update profile")
+		writeError(c, http.StatusInternalServerError, "Failed to update profile")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile updated successfully",
 		"user":    user.ToProfile(),
 	})
 }
 
 // UpdatePasswordHandler verifies current password and saves new password.
-func (a *API) UpdatePasswordHandler(w http.ResponseWriter, r *http.Request) {
-	user, ok := GetUserFromContext(r.Context())
+func (a *API) UpdatePasswordHandler(c *gin.Context) {
+	user, ok := GetUserFromContext(c)
 	if !ok || user == nil {
-		writeError(w, http.StatusUnauthorized, "Not authenticated")
+		writeError(c, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
 
 	var req models.UpdatePasswordRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
 	if !auth.CheckPassword(req.CurrentPassword, user.PasswordHash, user.PasswordSalt) {
-		writeError(w, http.StatusBadRequest, "Current password is incorrect")
+		writeError(c, http.StatusBadRequest, "Current password is incorrect")
 		return
 	}
 
 	if len(req.NewPassword) < 6 {
-		writeError(w, http.StatusBadRequest, "New password must be at least 6 characters")
+		writeError(c, http.StatusBadRequest, "New password must be at least 6 characters")
 		return
 	}
 
 	newHash, newSalt := auth.HashPassword(req.NewPassword)
 	if !a.store.UpdatePassword(user.ID, newHash, newSalt) {
-		writeError(w, http.StatusInternalServerError, "Failed to update password")
+		writeError(c, http.StatusInternalServerError, "Failed to update password")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Password updated successfully"})
 }
 
 // ==========================================
@@ -229,9 +222,9 @@ func (a *API) UpdatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 // ==========================================
 
 // HealthHandler returns engine runtime health.
-func (a *API) HealthHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) HealthHandler(c *gin.Context) {
 	stats := a.store.GetSystemStats(a.pool.ActiveWorkers())
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"status":     "healthy",
 		"service":    "openboy-engine",
 		"version":    "1.0.0",
@@ -243,9 +236,9 @@ func (a *API) HealthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // StatsHandler returns system-wide telemetry and KPI cards.
-func (a *API) StatsHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) StatsHandler(c *gin.Context) {
 	stats := a.store.GetSystemStats(a.pool.ActiveWorkers())
-	writeJSON(w, http.StatusOK, stats)
+	c.JSON(http.StatusOK, stats)
 }
 
 // ==========================================
@@ -253,11 +246,11 @@ func (a *API) StatsHandler(w http.ResponseWriter, r *http.Request) {
 // ==========================================
 
 // ListMonitorsHandler returns all monitors, with optional search and category filters.
-func (a *API) ListMonitorsHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) ListMonitorsHandler(c *gin.Context) {
 	monitors := a.store.GetAllMonitors()
 
-	category := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("category")))
-	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	category := strings.ToLower(strings.TrimSpace(c.Query("category")))
+	search := strings.ToLower(strings.TrimSpace(c.Query("search")))
 
 	if category != "" || search != "" {
 		filtered := make([]models.Monitor, 0, len(monitors))
@@ -277,19 +270,19 @@ func (a *API) ListMonitorsHandler(w http.ResponseWriter, r *http.Request) {
 		monitors = filtered
 	}
 
-	writeJSON(w, http.StatusOK, monitors)
+	c.JSON(http.StatusOK, monitors)
 }
 
 // CreateMonitorHandler creates a new scheduled monitor.
-func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) CreateMonitorHandler(c *gin.Context) {
 	var req models.CreateMonitorRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
 		return
 	}
 
 	if req.Name == "" || req.URL == "" {
-		writeError(w, http.StatusBadRequest, "Name and URL are required")
+		writeError(c, http.StatusBadRequest, "Name and URL are required")
 		return
 	}
 
@@ -348,32 +341,20 @@ func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(v) != "" {
 			notifications = v
 		}
-	case []interface{}:
-		var list []string
-		for _, item := range v {
-			if str, ok := item.(string); ok && str != "" {
-				list = append(list, str)
-			}
-		}
-		if len(list) > 0 {
-			notifications = strings.Join(list, ",")
-		}
+	case map[string]interface{}:
+		b, _ := json.Marshal(v)
+		notifications = string(b)
 	}
 
 	headersMap := make(map[string]string)
-	switch v := req.Headers.(type) {
-	case map[string]interface{}:
-		for k, val := range v {
-			headersMap[k] = fmt.Sprintf("%v", val)
-		}
-	case map[string]string:
-		headersMap = v
-	case string:
-		if strings.TrimSpace(v) != "" {
-			var parsed map[string]string
-			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
-				headersMap = parsed
-			} else {
+	if req.Headers != nil {
+		switch v := req.Headers.(type) {
+		case map[string]interface{}:
+			for k, val := range v {
+				headersMap[k] = fmt.Sprint(val)
+			}
+		case string:
+			if strings.TrimSpace(v) != "" {
 				lines := strings.Split(v, "\n")
 				for _, line := range lines {
 					parts := strings.SplitN(line, ":", 2)
@@ -386,7 +367,7 @@ func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := ""
-	if user, ok := GetUserFromContext(r.Context()); ok && user != nil {
+	if user, ok := GetUserFromContext(c); ok && user != nil {
 		userID = user.ID
 	}
 
@@ -419,64 +400,69 @@ func (a *API) CreateMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		a.scheduler.TriggerPingNow(created.ID)
 	}()
 
-	writeJSON(w, http.StatusCreated, created)
+	c.JSON(http.StatusCreated, created)
 }
 
 // GetMonitorHandler returns a single monitor by ID.
-func (a *API) GetMonitorHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) GetMonitorHandler(c *gin.Context) {
+	id := c.Param("id")
 	m, ok := a.store.GetMonitor(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Monitor not found")
+		writeError(c, http.StatusNotFound, "Monitor not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, m)
+	c.JSON(http.StatusOK, m)
 }
 
 // UpdateMonitorHandler updates a monitor completely.
-func (a *API) UpdateMonitorHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) UpdateMonitorHandler(c *gin.Context) {
+	id := c.Param("id")
 	var m models.Monitor
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&m); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 	m.ID = id
 	if !a.store.UpdateMonitor(m) {
-		writeError(w, http.StatusNotFound, "Monitor not found")
+		writeError(c, http.StatusNotFound, "Monitor not found")
 		return
 	}
 	logger.Info("Updated monitor [%s] %s", id, m.Name)
-	writeJSON(w, http.StatusOK, m)
+	c.JSON(http.StatusOK, m)
 }
 
 // DeleteMonitorHandler removes a monitor.
-func (a *API) DeleteMonitorHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) DeleteMonitorHandler(c *gin.Context) {
+	id := c.Param("id")
 	if !a.store.DeleteMonitor(id) {
-		writeError(w, http.StatusNotFound, "Monitor not found")
+		writeError(c, http.StatusNotFound, "Monitor not found")
 		return
 	}
 	logger.Info("Deleted monitor [%s]", id)
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Monitor deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Monitor deleted successfully"})
 }
 
 // ToggleMonitorHandler switches monitor between active and paused.
-func (a *API) ToggleMonitorHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) ToggleMonitorHandler(c *gin.Context) {
+	id := c.Param("id")
 	updated, ok := a.store.ToggleMonitorStatus(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Monitor not found")
+		writeError(c, http.StatusNotFound, "Monitor not found")
 		return
 	}
 	logger.Info("Toggled monitor [%s] status to %s", id, updated.Status)
-	writeJSON(w, http.StatusOK, updated)
+	c.JSON(http.StatusOK, updated)
 }
 
 // PingMonitorHandler triggers a manual immediate probe.
-func (a *API) PingMonitorHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) PingMonitorHandler(c *gin.Context) {
+	id := c.Param("id")
 	log, err := a.scheduler.TriggerPingNow(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(c, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, log)
+	c.JSON(http.StatusOK, log)
 }
 
 // ==========================================
@@ -484,28 +470,27 @@ func (a *API) PingMonitorHandler(w http.ResponseWriter, r *http.Request, id stri
 // ==========================================
 
 // ListExecutionsHandler returns execution logs with pagination, filter, search, and optional monitor ID.
-func (a *API) ListExecutionsHandler(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
+func (a *API) ListExecutionsHandler(c *gin.Context) {
 	limit := 50
 	offset := 0
-	filter := strings.ToLower(query.Get("filter"))
-	search := query.Get("search")
-	monitorID := query.Get("monitor_id")
+	filter := strings.ToLower(c.Query("filter"))
+	search := c.Query("search")
+	monitorID := c.Query("monitor_id")
 	if monitorID == "" {
-		monitorID = query.Get("monitor")
+		monitorID = c.Query("monitor")
 	}
 
-	if l, err := strconv.Atoi(query.Get("limit")); err == nil && l > 0 {
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = l
 	} else if monitorID != "" {
 		limit = 500
 	}
-	if o, err := strconv.Atoi(query.Get("offset")); err == nil && o >= 0 {
+	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
 		offset = o
 	}
 
 	logs, total := a.store.GetLogs(limit, offset, filter, search, monitorID)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"logs":   logs,
 		"total":  total,
 		"limit":  limit,
@@ -514,22 +499,23 @@ func (a *API) ListExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ClearExecutionsHandler clears all logs.
-func (a *API) ClearExecutionsHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) ClearExecutionsHandler(c *gin.Context) {
 	count := a.store.ClearLogs()
 	logger.Info("Cleared %d execution logs", count)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"message": "Execution logs cleared successfully",
 		"cleared": count,
 	})
 }
 
 // DeleteExecutionHandler deletes a single log.
-func (a *API) DeleteExecutionHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) DeleteExecutionHandler(c *gin.Context) {
+	id := c.Param("id")
 	if !a.store.DeleteLog(id) {
-		writeError(w, http.StatusNotFound, "Log not found")
+		writeError(c, http.StatusNotFound, "Log not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Log deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Log deleted successfully"})
 }
 
 // ==========================================
@@ -537,21 +523,21 @@ func (a *API) DeleteExecutionHandler(w http.ResponseWriter, r *http.Request, id 
 // ==========================================
 
 // ListBatchersHandler returns all batch jobs.
-func (a *API) ListBatchersHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) ListBatchersHandler(c *gin.Context) {
 	batchers := a.store.GetAllBatchers()
-	writeJSON(w, http.StatusOK, batchers)
+	c.JSON(http.StatusOK, batchers)
 }
 
 // CreateBatcherHandler creates a new batch worker job.
-func (a *API) CreateBatcherHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) CreateBatcherHandler(c *gin.Context) {
 	var req models.CreateBatcherRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
 	if req.Name == "" || req.JobKey == "" || req.CronExpr == "" {
-		writeError(w, http.StatusBadRequest, "Name, JobKey, and CronExpr are required")
+		writeError(c, http.StatusBadRequest, "Name, JobKey, and CronExpr are required")
 		return
 	}
 
@@ -580,52 +566,56 @@ func (a *API) CreateBatcherHandler(w http.ResponseWriter, r *http.Request) {
 
 	created := a.store.CreateBatcher(b)
 	logger.Info("Created batcher [%s] %s (%s)", created.ID, created.Name, created.JobKey)
-	writeJSON(w, http.StatusCreated, created)
+	c.JSON(http.StatusCreated, created)
 }
 
 // GetBatcherHandler gets a single batcher.
-func (a *API) GetBatcherHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) GetBatcherHandler(c *gin.Context) {
+	id := c.Param("id")
 	b, ok := a.store.GetBatcher(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Batcher not found")
+		writeError(c, http.StatusNotFound, "Batcher not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	c.JSON(http.StatusOK, b)
 }
 
 // UpdateBatcherHandler updates an existing batcher.
-func (a *API) UpdateBatcherHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) UpdateBatcherHandler(c *gin.Context) {
+	id := c.Param("id")
 	var b models.Batcher
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&b); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 	b.ID = id
 	if !a.store.UpdateBatcher(b) {
-		writeError(w, http.StatusNotFound, "Batcher not found")
+		writeError(c, http.StatusNotFound, "Batcher not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	c.JSON(http.StatusOK, b)
 }
 
 // DeleteBatcherHandler deletes a batcher.
-func (a *API) DeleteBatcherHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) DeleteBatcherHandler(c *gin.Context) {
+	id := c.Param("id")
 	if !a.store.DeleteBatcher(id) {
-		writeError(w, http.StatusNotFound, "Batcher not found")
+		writeError(c, http.StatusNotFound, "Batcher not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Batcher deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Batcher deleted successfully"})
 }
 
 // TriggerBatcherHandler runs a batch worker manually.
-func (a *API) TriggerBatcherHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) TriggerBatcherHandler(c *gin.Context) {
+	id := c.Param("id")
 	b, ok := a.store.TriggerBatcher(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Batcher not found")
+		writeError(c, http.StatusNotFound, "Batcher not found")
 		return
 	}
 	logger.Info("Manually triggered batch worker: [%s] %s", id, b.Name)
-	writeJSON(w, http.StatusOK, b)
+	c.JSON(http.StatusOK, b)
 }
 
 // ==========================================
@@ -633,21 +623,21 @@ func (a *API) TriggerBatcherHandler(w http.ResponseWriter, r *http.Request, id s
 // ==========================================
 
 // ListIncidentsHandler returns all incidents.
-func (a *API) ListIncidentsHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) ListIncidentsHandler(c *gin.Context) {
 	incidents := a.store.GetAllIncidents()
-	writeJSON(w, http.StatusOK, incidents)
+	c.JSON(http.StatusOK, incidents)
 }
 
 // CreateIncidentHandler declares a new incident.
-func (a *API) CreateIncidentHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) CreateIncidentHandler(c *gin.Context) {
 	var req models.CreateIncidentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
 	if req.Title == "" || req.Service == "" {
-		writeError(w, http.StatusBadRequest, "Title and Service are required")
+		writeError(c, http.StatusBadRequest, "Title and Service are required")
 		return
 	}
 
@@ -669,50 +659,54 @@ func (a *API) CreateIncidentHandler(w http.ResponseWriter, r *http.Request) {
 
 	created := a.store.CreateIncident(inc)
 	logger.Warn("Declared incident [%s] %s: %s", created.ID, created.Severity, created.Title)
-	writeJSON(w, http.StatusCreated, created)
+	c.JSON(http.StatusCreated, created)
 }
 
 // GetIncidentHandler gets a single incident.
-func (a *API) GetIncidentHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) GetIncidentHandler(c *gin.Context) {
+	id := c.Param("id")
 	inc, ok := a.store.GetIncident(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Incident not found")
+		writeError(c, http.StatusNotFound, "Incident not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, inc)
+	c.JSON(http.StatusOK, inc)
 }
 
 // UpdateIncidentHandler updates an incident.
-func (a *API) UpdateIncidentHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) UpdateIncidentHandler(c *gin.Context) {
+	id := c.Param("id")
 	var inc models.Incident
-	if err := json.NewDecoder(r.Body).Decode(&inc); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid payload")
+	if err := c.ShouldBindJSON(&inc); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 	inc.ID = id
 	if !a.store.UpdateIncident(inc) {
-		writeError(w, http.StatusNotFound, "Incident not found")
+		writeError(c, http.StatusNotFound, "Incident not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, inc)
+	c.JSON(http.StatusOK, inc)
 }
 
 // ResolveIncidentHandler marks an incident resolved.
-func (a *API) ResolveIncidentHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) ResolveIncidentHandler(c *gin.Context) {
+	id := c.Param("id")
 	inc, ok := a.store.ResolveIncident(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Incident not found")
+		writeError(c, http.StatusNotFound, "Incident not found")
 		return
 	}
 	logger.Info("Resolved incident [%s] %s", id, inc.Title)
-	writeJSON(w, http.StatusOK, inc)
+	c.JSON(http.StatusOK, inc)
 }
 
 // DeleteIncidentHandler deletes an incident.
-func (a *API) DeleteIncidentHandler(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) DeleteIncidentHandler(c *gin.Context) {
+	id := c.Param("id")
 	if !a.store.DeleteIncident(id) {
-		writeError(w, http.StatusNotFound, "Incident not found")
+		writeError(c, http.StatusNotFound, "Incident not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Incident deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Incident deleted successfully"})
 }

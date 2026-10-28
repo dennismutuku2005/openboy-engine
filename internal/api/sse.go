@@ -6,14 +6,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"openboy-engine/pkg/logger"
 )
 
 // StreamHandler streams live execution logs and heartbeats using Server-Sent Events (SSE).
-func (a *API) StreamHandler(w http.ResponseWriter, r *http.Request) {
+func (a *API) StreamHandler(c *gin.Context) {
+	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Streaming unsupported"})
 		return
 	}
 
@@ -21,11 +23,12 @@ func (a *API) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Flush()
 
 	logChan, unsubscribe := a.store.SubscribeLogStream()
 	defer unsubscribe()
 
-	logger.Info("SSE client connected from %s", r.RemoteAddr)
+	logger.Info("SSE client connected from %s", c.Request.RemoteAddr)
 
 	// Send initial greeting
 	stats := a.store.GetSystemStats(a.pool.ActiveWorkers())
@@ -41,10 +44,11 @@ func (a *API) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	keepAlive := time.NewTicker(15 * time.Second)
 	defer keepAlive.Stop()
 
+	notify := c.Request.Context().Done()
 	for {
 		select {
-		case <-r.Context().Done():
-			logger.Info("SSE client disconnected: %s", r.RemoteAddr)
+		case <-notify:
+			logger.Info("SSE client disconnected: %s", c.Request.RemoteAddr)
 			return
 		case log, ok := <-logChan:
 			if !ok {
