@@ -219,12 +219,14 @@ func (m *MySQLSync) SaveMonitor(mon models.Monitor) {
 	}
 }
 
-// DeleteMonitor deletes a monitor from MySQL.
+// DeleteMonitor deletes a monitor and all associated execution logs and incidents from MySQL.
 func (m *MySQLSync) DeleteMonitor(id string) {
 	if m == nil || m.db == nil {
 		return
 	}
-	m.db.Exec("DELETE FROM monitors WHERE id = ?", id)
+	_, _ = m.db.Exec("DELETE FROM execution_logs WHERE monitor_id = ?", id)
+	_, _ = m.db.Exec("DELETE FROM incidents WHERE monitor_id = ?", id)
+	_, _ = m.db.Exec("DELETE FROM monitors WHERE id = ?", id)
 }
 
 // GetMonitor fetches a single monitor directly from MySQL by ID.

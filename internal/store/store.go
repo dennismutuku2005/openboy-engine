@@ -364,19 +364,31 @@ func (s *Store) UpdateMonitor(m models.Monitor) bool {
 	return true
 }
 
-// DeleteMonitor deletes a monitor directly from MySQL or fallback store.
+// DeleteMonitor deletes a monitor and its associated logs and incidents directly from MySQL or fallback store.
 func (s *Store) DeleteMonitor(id string) bool {
 	if s.mysql != nil {
 		s.mysql.DeleteMonitor(id)
-		return true
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.monitors[id]; !ok {
-		return false
-	}
+
 	delete(s.monitors, id)
+
+	filteredLogs := make([]models.ExecutionLog, 0, len(s.logs))
+	for _, l := range s.logs {
+		if l.MonitorID != id {
+			filteredLogs = append(filteredLogs, l)
+		}
+	}
+	s.logs = filteredLogs
+
+	for incID, inc := range s.incidents {
+		if inc.MonitorID == id {
+			delete(s.incidents, incID)
+		}
+	}
+
 	return true
 }
 
