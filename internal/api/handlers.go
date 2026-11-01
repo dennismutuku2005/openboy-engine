@@ -485,7 +485,7 @@ func (a *API) PingMonitorHandler(c *gin.Context) {
 
 // ListExecutionsHandler returns execution logs with pagination, filter, search, and optional monitor ID.
 func (a *API) ListExecutionsHandler(c *gin.Context) {
-	limit := 50
+	limit := 12
 	offset := 0
 	filter := strings.ToLower(c.Query("filter"))
 	search := c.Query("search")
@@ -496,8 +496,6 @@ func (a *API) ListExecutionsHandler(c *gin.Context) {
 
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = l
-	} else if monitorID != "" {
-		limit = 500
 	}
 	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
 		offset = o
