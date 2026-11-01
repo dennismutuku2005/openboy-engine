@@ -50,7 +50,7 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 	start := time.Now()
 
 	timeout := time.Duration(m.Timeout) * time.Second
-	if timeout <= 0 {
+	if timeout < 30*time.Second {
 		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)

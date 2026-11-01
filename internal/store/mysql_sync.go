@@ -61,6 +61,9 @@ func (m *MySQLSync) SeedIfEmpty() error {
 
 	_ = m.SeedIncidentsIfEmpty()
 
+	// Ensure all existing and newly loaded monitors have at least a 30-second timeout
+	_, _ = m.db.Exec("UPDATE monitors SET timeout_sec = 30 WHERE timeout_sec < 30")
+
 	return nil
 }
 
@@ -151,6 +154,9 @@ func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 		)
 		if err != nil {
 			continue
+		}
+		if mon.Timeout < 30 {
+			mon.Timeout = 30
 		}
 		if userID.Valid {
 			mon.UserID = userID.String
