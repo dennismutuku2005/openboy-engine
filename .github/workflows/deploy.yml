@@ -78,10 +78,10 @@ jobs:
 
       - name: Deploy to Droplet and Restart PM2 on Port 4040
         env:
-          DROPLET_HOST: ${{ secrets.DROPLET_HOST || secrets.HOST }}
-          DROPLET_USERNAME: ${{ secrets.DROPLET_USERNAME || secrets.DROPLET_USER || secrets.SSH_USER || secrets.USERNAME || secrets.USER || 'root' }}
-          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD || secrets.SSH_PASSWORD || secrets.PASSWORD }}
-          DROPLET_PORT: ${{ secrets.DROPLET_PORT || secrets.SSH_PORT || secrets.PORT || '22' }}
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_USERNAME: ${{ secrets.DROPLET_USERNAME }}
+          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD }}
+          DROPLET_PORT: ${{ secrets.DROPLET_PORT }}
         run: |
           # 1. SSH Username: default to 'root' if empty or not set
           SSH_USER="${DROPLET_USERNAME:-root}"

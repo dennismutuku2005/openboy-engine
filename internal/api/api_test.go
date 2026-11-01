@@ -203,8 +203,8 @@ func BenchmarkGinMonitorsEndpoint(b *testing.B) {
 	req, _ := http.NewRequest(http.MethodGet, "/api/monitors", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 	}
