@@ -159,18 +159,25 @@ func (sc *Scheduler) isMonitorDue(m *models.Monitor, now time.Time) bool {
 		intervalSec = 10
 	}
 
-	// Cooldown since last dispatch to worker pool
+	// Cadence timing: measure interval from when the probe was dispatched (started),
+	// NOT from when the HTTP response finished downloading. This guarantees strict
+	// fixed intervals (e.g. exactly every 30 seconds) without drifting by network latency.
 	sc.dispatchMu.RLock()
 	lastDisp, hasDisp := sc.lastDispatched[m.ID]
 	sc.dispatchMu.RUnlock()
-	if hasDisp && now.Sub(lastDisp).Seconds() < float64(intervalSec) {
-		return false
-	}
 
-	// Cooldown since last completed execution recorded in store
-	if m.LastChecked != nil {
-		elapsed := now.Sub(*m.LastChecked).Seconds()
-		if elapsed < float64(intervalSec) {
+	if hasDisp {
+		if now.Sub(lastDisp).Seconds() < float64(intervalSec) {
+			return false
+		}
+	} else if m.LastChecked != nil {
+		// Cold start / engine restart: estimate start of last probe by subtracting
+		// probe latency from LastChecked so we don't drift the interval.
+		lastStart := *m.LastChecked
+		if m.LastLatency > 0 {
+			lastStart = lastStart.Add(-time.Duration(m.LastLatency) * time.Millisecond)
+		}
+		if now.Sub(lastStart).Seconds() < float64(intervalSec) {
 			return false
 		}
 	}
@@ -243,19 +250,26 @@ func (sc *Scheduler) TriggerPingNow(monitorID string) (*models.ExecutionLog, err
 		return nil, fmt.Errorf("monitor '%s' not found", monitorID)
 	}
 
-	if sc.pool.IsInFlight(monitorID) {
+	// Atomically mark in-flight to prevent duplicate concurrent execution with scheduler tick
+	if !sc.pool.MarkInFlight(monitorID) {
 		return nil, fmt.Errorf("a health check for monitor '%s' is already in progress", monitorID)
 	}
+	defer sc.pool.ReleaseInFlight(monitorID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Immediately update lastDispatched so scheduler tick respects the cooldown
+	sc.dispatchMu.Lock()
+	sc.lastDispatched[monitorID] = time.Now()
+	sc.dispatchMu.Unlock()
+
+	pingTimeout := 30 * time.Second
+	if m.Timeout > 0 {
+		pingTimeout = time.Duration(m.Timeout) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
 	log := sc.prober.Probe(ctx, m)
 	sc.store.RecordPingResult(log)
-
-	sc.dispatchMu.Lock()
-	sc.lastDispatched[monitorID] = time.Now()
-	sc.dispatchMu.Unlock()
 
 	return &log, nil
 }

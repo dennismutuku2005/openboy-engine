@@ -334,7 +334,7 @@ func (a *API) CreateMonitorHandler(c *gin.Context) {
 
 	timeout := req.Timeout
 	if timeout <= 0 {
-		timeout = 10
+		timeout = 30
 	}
 
 	category := req.Category

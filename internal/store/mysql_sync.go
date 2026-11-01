@@ -329,6 +329,10 @@ func (m *MySQLSync) RecordLog(log models.ExecutionLog) {
 
 	// 2. Update monitor in MySQL
 	now := time.Now()
+	isFailedInt := 0
+	if !log.OK {
+		isFailedInt = 1
+	}
 	_, err = m.db.Exec(`
 		UPDATE monitors
 		SET last_status = ?,
@@ -336,29 +340,18 @@ func (m *MySQLSync) RecordLog(log models.ExecutionLog) {
 		    last_checked_at = ?,
 		    total_pings = total_pings + 1,
 		    failed_pings = failed_pings + ?,
-		    consecutive_fails = ?,
-		    status = ?,
+		    consecutive_fails = CASE WHEN ? = 1 THEN consecutive_fails + 1 ELSE 0 END,
+		    status = CASE 
+		        WHEN status = 'paused' THEN 'paused'
+		        WHEN ? = 1 THEN 'failing'
+		        ELSE 'active'
+		    END,
 		    updated_at = ?
 		WHERE id = ?`,
 		log.Status, log.Latency, now,
-		func() int {
-			if !log.OK {
-				return 1
-			}
-			return 0
-		}(),
-		func() int {
-			if !log.OK {
-				return 1
-			}
-			return 0
-		}(),
-		func() string {
-			if !log.OK {
-				return "failing"
-			}
-			return "active"
-		}(),
+		isFailedInt,
+		isFailedInt,
+		isFailedInt,
 		now, log.MonitorID,
 	)
 	if err != nil {
@@ -1018,6 +1011,74 @@ func (m *MySQLSync) ResolveIncident(id string) (*models.Incident, error) {
 	inc.ResolvedAt = &now
 	inc.Duration = durationStr
 	return inc, nil
+}
+
+// GetActiveIncidentForMonitor checks if there is an ongoing (unresolved) incident for this monitor.
+func (m *MySQLSync) GetActiveIncidentForMonitor(monitorID string) (*models.Incident, error) {
+	if m == nil || m.db == nil || monitorID == "" {
+		return nil, nil
+	}
+
+	var inc models.Incident
+	var monID, duration, cause, dispatchJSON sql.NullString
+	var resolvedAt sql.NullTime
+
+	err := m.db.QueryRow(`
+		SELECT id, monitor_id, title, service, url, severity, status,
+		       started_at, duration, cause, dispatched_to_json, resolved_at
+		FROM incidents
+		WHERE monitor_id = ? AND status != 'resolved'
+		ORDER BY started_at DESC
+		LIMIT 1`, monitorID,
+	).Scan(
+		&inc.ID, &monID, &inc.Title, &inc.Service, &inc.URL, &inc.Severity,
+		&inc.Status, &inc.StartedAt, &duration, &cause, &dispatchJSON, &resolvedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if monID.Valid {
+		inc.MonitorID = monID.String
+	}
+	if duration.Valid {
+		inc.Duration = duration.String
+	}
+	if cause.Valid {
+		inc.Cause = cause.String
+	}
+	return &inc, nil
+}
+
+// ResolveActiveIncidentsForMonitor marks open incidents for this monitor as resolved when probe succeeds.
+func (m *MySQLSync) ResolveActiveIncidentsForMonitor(monitorID string) error {
+	if m == nil || m.db == nil || monitorID == "" {
+		return nil
+	}
+
+	now := time.Now()
+	rows, err := m.db.Query(`SELECT id, started_at FROM incidents WHERE monitor_id = ? AND status != 'resolved'`, monitorID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var startedAt time.Time
+		if err := rows.Scan(&id, &startedAt); err == nil {
+			durMinutes := int(now.Sub(startedAt).Minutes())
+			durationStr := fmt.Sprintf("%dm", durMinutes)
+			if durMinutes < 1 {
+				durationStr = "< 1m"
+			}
+			_, _ = m.db.Exec(`UPDATE incidents SET status = 'resolved', resolved_at = ?, duration = ? WHERE id = ?`, now, durationStr, id)
+		}
+	}
+	return nil
 }
 
 // UpdateUser modifies user details in MySQL.

@@ -40,7 +40,7 @@ func NewProber() *Prober {
 	return &Prober{
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   15 * time.Second,
+			Timeout:   60 * time.Second,
 		},
 	}
 }
@@ -51,7 +51,7 @@ func (p *Prober) Probe(ctx context.Context, m *models.Monitor) models.ExecutionL
 
 	timeout := time.Duration(m.Timeout) * time.Second
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

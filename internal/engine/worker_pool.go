@@ -91,6 +91,18 @@ func (wp *WorkerPool) IsInFlight(monitorID string) bool {
 	return ok
 }
 
+// MarkInFlight atomically marks a monitor as actively executing.
+// Returns false if a probe is already in flight.
+func (wp *WorkerPool) MarkInFlight(monitorID string) bool {
+	_, loaded := wp.inFlight.LoadOrStore(monitorID, time.Now())
+	return !loaded
+}
+
+// ReleaseInFlight removes the in-flight lock for a monitor.
+func (wp *WorkerPool) ReleaseInFlight(monitorID string) {
+	wp.inFlight.Delete(monitorID)
+}
+
 // Enqueue submits a monitor probe job to the worker pool.
 // Returns false if the monitor already has an active probe in flight or if the queue is full.
 func (wp *WorkerPool) Enqueue(m models.Monitor) bool {

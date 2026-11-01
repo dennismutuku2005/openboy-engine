@@ -99,3 +99,59 @@ func TestStoreOperations(t *testing.T) {
 		t.Errorf("Incident resolve failed: %+v", resolved)
 	}
 }
+
+func TestMonitorFailureDoesNotAutoPause(t *testing.T) {
+	s := NewStore("")
+
+	mon := s.CreateMonitor(models.Monitor{
+		Name:            "Fragile Service",
+		URL:             "https://example.com/fail",
+		Method:          "GET",
+		Interval:        "10s",
+		IntervalSeconds: 10,
+		Status:          "active",
+	})
+
+	// Fail 10 times consecutively
+	for i := 0; i < 10; i++ {
+		s.RecordPingResult(models.ExecutionLog{
+			ID:          "fail-log",
+			MonitorID:   mon.ID,
+			MonitorName: mon.Name,
+			URL:         mon.URL,
+			Status:      500,
+			OK:          false,
+			Error:       "Internal Server Error",
+		})
+	}
+
+	updated, ok := s.GetMonitor(mon.ID)
+	if !ok {
+		t.Fatalf("Monitor not found")
+	}
+
+	// Must NOT be paused!
+	if updated.Status == "paused" {
+		t.Fatalf("Monitor should NOT auto-pause on failures! Current status: %s", updated.Status)
+	}
+
+	if updated.Status != "failing" {
+		t.Errorf("Expected status to be 'failing', got '%s'", updated.Status)
+	}
+
+	// Ping succeeds -> returns to active
+	s.RecordPingResult(models.ExecutionLog{
+		ID:          "pass-log",
+		MonitorID:   mon.ID,
+		MonitorName: mon.Name,
+		URL:         mon.URL,
+		Status:      200,
+		OK:          true,
+	})
+
+	recovered, _ := s.GetMonitor(mon.ID)
+	if recovered.Status != "active" {
+		t.Errorf("Expected status to return to 'active', got '%s'", recovered.Status)
+	}
+}
+
