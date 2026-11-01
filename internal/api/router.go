@@ -152,6 +152,7 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 
 			// Executions
 			protected.GET("/executions", apiService.ListExecutionsHandler)
+			protected.GET("/executions/stats", apiService.ExecutionStatsHandler)
 			protected.DELETE("/executions", apiService.ClearExecutionsHandler)
 			protected.DELETE("/executions/:id", apiService.DeleteExecutionHandler)
 

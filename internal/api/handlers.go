@@ -509,6 +509,16 @@ func (a *API) ListExecutionsHandler(c *gin.Context) {
 	})
 }
 
+// ExecutionStatsHandler returns aggregated KPI metrics for execution runs directly from database.
+func (a *API) ExecutionStatsHandler(c *gin.Context) {
+	monitorID := c.Query("monitor_id")
+	if monitorID == "" {
+		monitorID = c.Query("monitor")
+	}
+	stats := a.store.GetExecutionStats(monitorID)
+	c.JSON(http.StatusOK, stats)
+}
+
 // ClearExecutionsHandler clears all logs.
 func (a *API) ClearExecutionsHandler(c *gin.Context) {
 	count := a.store.ClearLogs()

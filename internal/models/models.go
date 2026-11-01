@@ -179,6 +179,15 @@ type SystemStats struct {
 	MemoryAllocMB   float64 `json:"memoryAllocMb"`
 }
 
+// ExecutionStats represents real-time aggregated metrics for execution audit runs.
+type ExecutionStats struct {
+	TotalRuns    int64  `json:"totalRuns"`
+	SuccessCount int64  `json:"successCount"`
+	ErrorCount   int64  `json:"errorCount"`
+	SuccessRate  string `json:"successRate"`
+	AvgLatencyMs int64  `json:"avgLatencyMs"`
+}
+
 // CreateMonitorRequest represents the payload to create a new monitor.
 type CreateMonitorRequest struct {
 	Name            string      `json:"name"`

@@ -553,6 +553,51 @@ func (s *Store) GetLogs(limit, offset int, filter, search string, monitorID ...s
 	return res, total
 }
 
+// GetExecutionStats retrieves aggregated execution metrics directly from MySQL or fallback store.
+func (s *Store) GetExecutionStats(monitorID string) models.ExecutionStats {
+	if s.mysql != nil {
+		if stats, err := s.mysql.GetExecutionStats(monitorID); err == nil {
+			return stats
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var totalRuns, successCount, errorCount, totalLatency int64
+	for _, l := range s.logs {
+		if monitorID != "" && l.MonitorID != monitorID {
+			continue
+		}
+		totalRuns++
+		if l.OK {
+			successCount++
+		} else {
+			errorCount++
+		}
+		totalLatency += l.Latency
+	}
+
+	avgLatency := int64(0)
+	if totalRuns > 0 {
+		avgLatency = totalLatency / totalRuns
+	}
+
+	successRate := "100.0%"
+	if totalRuns > 0 {
+		rate := (float64(successCount) / float64(totalRuns)) * 100.0
+		successRate = fmt.Sprintf("%.1f%%", rate)
+	}
+
+	return models.ExecutionStats{
+		TotalRuns:    totalRuns,
+		SuccessCount: successCount,
+		ErrorCount:   errorCount,
+		SuccessRate:  successRate,
+		AvgLatencyMs: avgLatency,
+	}
+}
+
 // ClearLogs empties the execution logs directly in MySQL or fallback store.
 func (s *Store) ClearLogs() int {
 	if s.mysql != nil {

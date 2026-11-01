@@ -523,6 +523,51 @@ func (m *MySQLSync) QueryLogs(monitorID string, filter string, search string, li
 	return logs, total, nil
 }
 
+// GetExecutionStats aggregates total runs, successes, errors, and average latency directly from execution_logs.
+func (m *MySQLSync) GetExecutionStats(monitorID string) (models.ExecutionStats, error) {
+	var stats models.ExecutionStats
+	if m == nil || m.db == nil {
+		return stats, nil
+	}
+
+	whereClause := "1=1"
+	var args []interface{}
+	if strings.TrimSpace(monitorID) != "" {
+		whereClause = "monitor_id = ?"
+		args = append(args, strings.TrimSpace(monitorID))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN is_ok = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN is_ok = 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(ROUND(AVG(latency_ms)), 0)
+		FROM execution_logs
+		WHERE %s`, whereClause)
+
+	err := m.db.QueryRowContext(ctx, query, args...).Scan(
+		&stats.TotalRuns,
+		&stats.SuccessCount,
+		&stats.ErrorCount,
+		&stats.AvgLatencyMs,
+	)
+	if err != nil {
+		return stats, err
+	}
+
+	stats.SuccessRate = "100.0%"
+	if stats.TotalRuns > 0 {
+		rate := (float64(stats.SuccessCount) / float64(stats.TotalRuns)) * 100.0
+		stats.SuccessRate = fmt.Sprintf("%.1f%%", rate)
+	}
+
+	return stats, nil
+}
+
 // ClearLogs deletes all execution logs directly from MySQL.
 func (m *MySQLSync) ClearLogs() int {
 	if m == nil || m.db == nil {
