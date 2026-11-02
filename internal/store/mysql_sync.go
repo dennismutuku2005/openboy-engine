@@ -622,6 +622,104 @@ func (m *MySQLSync) GetLatencyStats(monitorID string) (models.LatencyStats, erro
 	return stats, nil
 }
 
+// GetTimeline returns real-time timeline data points directly from execution_logs.
+func (m *MySQLSync) GetTimeline(monitorID string, limit int) (models.TimelineResponse, error) {
+	var resp models.TimelineResponse
+	resp.Timeline = make([]models.TimelineItem, 0)
+	if m == nil || m.db == nil {
+		resp.SLA = "100.0%"
+		return resp, nil
+	}
+
+	trimmedID := strings.TrimSpace(monitorID)
+	resp.MonitorID = trimmedID
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 1. Total runs and SLA
+	var totalRuns, successCount int64
+	if trimmedID != "" {
+		_ = m.db.QueryRowContext(ctx, `
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(CASE WHEN is_ok = 1 THEN 1 ELSE 0 END), 0)
+			FROM execution_logs
+			WHERE monitor_id = ?`, trimmedID).Scan(&totalRuns, &successCount)
+
+		// Fallback to monitors table if execution_logs has been cleared or pruned
+		var monTotal, monFailed int64
+		var monUptime string
+		err := m.db.QueryRowContext(ctx, `SELECT total_pings, failed_pings, uptime_pct FROM monitors WHERE id = ?`, trimmedID).Scan(&monTotal, &monFailed, &monUptime)
+		if err == nil && monTotal > totalRuns {
+			totalRuns = monTotal
+			successCount = monTotal - monFailed
+			if monUptime != "" {
+				resp.SLA = monUptime
+			}
+		}
+	} else {
+		_ = m.db.QueryRowContext(ctx, `
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(CASE WHEN is_ok = 1 THEN 1 ELSE 0 END), 0)
+			FROM execution_logs`).Scan(&totalRuns, &successCount)
+	}
+
+	resp.TotalRecorded = totalRuns
+	if resp.SLA == "" {
+		resp.SLA = "100.0%"
+		if totalRuns > 0 {
+			rate := (float64(successCount) / float64(totalRuns)) * 100.0
+			resp.SLA = fmt.Sprintf("%.1f%%", rate)
+		}
+	}
+
+	// 2. Query recent execution timeline points ordered by timestamp DESC
+	whereClause := "1=1"
+	var args []interface{}
+	if trimmedID != "" {
+		whereClause = "monitor_id = ?"
+		args = append(args, trimmedID)
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT id, monitor_id, status, latency_ms, is_ok, timestamp
+		FROM execution_logs
+		WHERE %s
+		ORDER BY timestamp DESC
+		LIMIT ?`, whereClause)
+
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return resp, err
+	}
+	defer rows.Close()
+
+	var descItems []models.TimelineItem
+	for rows.Next() {
+		var item models.TimelineItem
+		var ts time.Time
+		if err := rows.Scan(&item.ID, &item.MonitorID, &item.Status, &item.Latency, &item.OK, &ts); err == nil {
+			item.Timestamp = ts
+			item.FormattedTime = ts.UTC().Format("15:04:05")
+			descItems = append(descItems, item)
+		}
+	}
+
+	// Reverse descItems to chronological order (oldest to newest, left-to-right on timeline)
+	resp.Timeline = make([]models.TimelineItem, len(descItems))
+	for i, item := range descItems {
+		resp.Timeline[len(descItems)-1-i] = item
+	}
+
+	return resp, nil
+}
+
 // ClearLogs deletes all execution logs directly from MySQL.
 func (m *MySQLSync) ClearLogs() int {
 	if m == nil || m.db == nil {

@@ -671,6 +671,76 @@ func (s *Store) GetLatencyStats(monitorID string) models.LatencyStats {
 	}
 }
 
+// GetTimeline returns real-time timeline data points directly from MySQL or fallback store.
+func (s *Store) GetTimeline(monitorID string, limit int) models.TimelineResponse {
+	if s.mysql != nil {
+		if resp, err := s.mysql.GetTimeline(monitorID, limit); err == nil {
+			return resp
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	trimmedID := strings.TrimSpace(monitorID)
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+
+	var matchedLogs []models.ExecutionLog
+	var totalRecorded, successCount int64
+
+	for _, l := range s.logs {
+		if trimmedID != "" && l.MonitorID != trimmedID {
+			continue
+		}
+		totalRecorded++
+		if l.OK {
+			successCount++
+		}
+		matchedLogs = append(matchedLogs, l)
+	}
+
+	sla := "100.0%"
+	if totalRecorded > 0 {
+		rate := (float64(successCount) / float64(totalRecorded)) * 100.0
+		sla = fmt.Sprintf("%.1f%%", rate)
+	} else if trimmedID != "" {
+		if m, ok := s.monitors[trimmedID]; ok {
+			totalRecorded = m.TotalPings
+			if m.Uptime != "" {
+				sla = m.Uptime
+			}
+		}
+	}
+
+	start := 0
+	if len(matchedLogs) > limit {
+		start = len(matchedLogs) - limit
+	}
+	slice := matchedLogs[start:]
+
+	timeline := make([]models.TimelineItem, 0, len(slice))
+	for _, l := range slice {
+		timeline = append(timeline, models.TimelineItem{
+			ID:            l.ID,
+			MonitorID:     l.MonitorID,
+			Status:        l.Status,
+			Latency:       l.Latency,
+			OK:            l.OK,
+			Timestamp:     l.Timestamp,
+			FormattedTime: l.FormattedTime,
+		})
+	}
+
+	return models.TimelineResponse{
+		MonitorID:     trimmedID,
+		TotalRecorded: totalRecorded,
+		SLA:           sla,
+		Timeline:      timeline,
+	}
+}
+
 // ClearLogs empties the execution logs directly in MySQL or fallback store.
 func (s *Store) ClearLogs() int {
 	if s.mysql != nil {

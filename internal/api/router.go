@@ -96,6 +96,7 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 				"POST /api/monitors",
 				"GET  /api/monitors/:id",
 				"GET  /api/monitors/:id/latency",
+				"GET  /api/monitors/:id/timeline",
 				"PUT  /api/monitors/:id",
 				"DELETE /api/monitors/:id",
 				"POST /api/monitors/:id/ping",
@@ -103,6 +104,7 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 				"GET  /api/executions",
 				"GET  /api/executions/stats",
 				"GET  /api/executions/latency",
+				"GET  /api/executions/timeline",
 				"DELETE /api/executions",
 				"DELETE /api/executions/:id",
 				"GET  /api/batchers",
@@ -149,6 +151,7 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 			protected.POST("/monitors", apiService.CreateMonitorHandler)
 			protected.GET("/monitors/:id", apiService.GetMonitorHandler)
 			protected.GET("/monitors/:id/latency", apiService.MonitorLatencyHandler)
+			protected.GET("/monitors/:id/timeline", apiService.MonitorTimelineHandler)
 			protected.PUT("/monitors/:id", apiService.UpdateMonitorHandler)
 			protected.DELETE("/monitors/:id", apiService.DeleteMonitorHandler)
 			protected.POST("/monitors/:id/toggle", apiService.ToggleMonitorHandler)
@@ -158,6 +161,7 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 			protected.GET("/executions", apiService.ListExecutionsHandler)
 			protected.GET("/executions/stats", apiService.ExecutionStatsHandler)
 			protected.GET("/executions/latency", apiService.ExecutionLatencyHandler)
+			protected.GET("/executions/timeline", apiService.ExecutionTimelineHandler)
 			protected.DELETE("/executions", apiService.ClearExecutionsHandler)
 			protected.DELETE("/executions/:id", apiService.DeleteExecutionHandler)
 

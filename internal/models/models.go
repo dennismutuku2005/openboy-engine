@@ -198,6 +198,25 @@ type LatencyStats struct {
 	TotalSamples  int64  `json:"totalSamples"`
 }
 
+// TimelineItem represents a minimal execution record for timeline sparklines and SLA bars.
+type TimelineItem struct {
+	ID            string    `json:"id"`
+	MonitorID     string    `json:"monitorId,omitempty"`
+	Status        int       `json:"status"`
+	Latency       int64     `json:"latency"`
+	OK            bool      `json:"ok"`
+	Timestamp     time.Time `json:"timestamp"`
+	FormattedTime string    `json:"formattedTime"`
+}
+
+// TimelineResponse represents the real-time timeline dataset for an endpoint or ecosystem.
+type TimelineResponse struct {
+	MonitorID     string         `json:"monitorId,omitempty"`
+	TotalRecorded int64          `json:"totalRecorded"`
+	SLA           string         `json:"sla"`
+	Timeline      []TimelineItem `json:"timeline"`
+}
+
 // CreateMonitorRequest represents the payload to create a new monitor.
 type CreateMonitorRequest struct {
 	Name            string      `json:"name"`

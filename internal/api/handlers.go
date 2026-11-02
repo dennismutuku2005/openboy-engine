@@ -536,6 +536,25 @@ func (a *API) MonitorLatencyHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
+// ExecutionTimelineHandler returns real-time timeline blocks directly from database without fetching the execution list.
+func (a *API) ExecutionTimelineHandler(c *gin.Context) {
+	monitorID := c.Query("monitor_id")
+	if monitorID == "" {
+		monitorID = c.Query("monitor")
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
+	timeline := a.store.GetTimeline(monitorID, limit)
+	c.JSON(http.StatusOK, timeline)
+}
+
+// MonitorTimelineHandler returns real-time timeline blocks for a specific monitor.
+func (a *API) MonitorTimelineHandler(c *gin.Context) {
+	id := c.Param("id")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
+	timeline := a.store.GetTimeline(id, limit)
+	c.JSON(http.StatusOK, timeline)
+}
+
 // ClearExecutionsHandler clears all logs.
 func (a *API) ClearExecutionsHandler(c *gin.Context) {
 	count := a.store.ClearLogs()

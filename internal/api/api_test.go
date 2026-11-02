@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -183,6 +184,7 @@ func TestTelemetryAndDataEndpoints(t *testing.T) {
 		"/api/executions",
 		"/api/executions/stats",
 		"/api/executions/latency",
+		"/api/executions/timeline",
 		"/api/batchers",
 		"/api/incidents",
 		"/api/auth/me",
@@ -268,6 +270,73 @@ func TestExecutionLatencyEndpoints(t *testing.T) {
 	}
 	if monStats.AvgLatencyMs != 150 {
 		t.Errorf("expected avgLatencyMs 150, got %d", monStats.AvgLatencyMs)
+	}
+}
+
+func TestExecutionTimelineEndpoints(t *testing.T) {
+	apiService, router, token := setupTestRouter(t)
+
+	// Create test monitor
+	mon := apiService.store.CreateMonitor(models.Monitor{
+		Name:            "Timeline Test Endpoint",
+		URL:             "https://example.com/timeline",
+		Method:          "GET",
+		Interval:        "10s",
+		IntervalSeconds: 10,
+		Status:          "active",
+	})
+
+	// Record sample pings
+	for i := 1; i <= 5; i++ {
+		apiService.store.RecordPingResult(models.ExecutionLog{
+			ID:          fmt.Sprintf("log-tl-%d", i),
+			MonitorID:   mon.ID,
+			MonitorName: mon.Name,
+			URL:         mon.URL,
+			Status:      200,
+			Latency:     int64(i * 10),
+			OK:          true,
+		})
+	}
+
+	// 1. Query /api/executions/timeline?monitor_id=...&limit=3
+	req, _ := http.NewRequest(http.MethodGet, "/api/executions/timeline?monitor_id="+mon.ID+"&limit=3", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on executions/timeline, got %d", w.Code)
+	}
+
+	var timelineResp models.TimelineResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &timelineResp); err != nil {
+		t.Fatalf("failed to unmarshal timeline response: %v", err)
+	}
+	if timelineResp.TotalRecorded != 5 {
+		t.Errorf("expected TotalRecorded 5, got %d", timelineResp.TotalRecorded)
+	}
+	if len(timelineResp.Timeline) != 3 {
+		t.Errorf("expected 3 timeline items, got %d", len(timelineResp.Timeline))
+	}
+
+	// 2. Query /api/monitors/:id/timeline
+	req, _ = http.NewRequest(http.MethodGet, "/api/monitors/"+mon.ID+"/timeline", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /monitors/:id/timeline, got %d", w.Code)
+	}
+
+	var monTimelineResp models.TimelineResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &monTimelineResp); err != nil {
+		t.Fatalf("failed to unmarshal monitor timeline response: %v", err)
+	}
+	if monTimelineResp.TotalRecorded != 5 {
+		t.Errorf("expected TotalRecorded 5, got %d", monTimelineResp.TotalRecorded)
+	}
+	if len(monTimelineResp.Timeline) != 5 {
+		t.Errorf("expected 5 timeline items, got %d", len(monTimelineResp.Timeline))
 	}
 }
 
