@@ -606,6 +606,71 @@ func (s *Store) GetExecutionStats(monitorID string) models.ExecutionStats {
 	}
 }
 
+// GetLatencyStats calculates average, min, max, and latest latency directly from MySQL or fallback store.
+func (s *Store) GetLatencyStats(monitorID string) models.LatencyStats {
+	if s.mysql != nil {
+		if stats, err := s.mysql.GetLatencyStats(monitorID); err == nil {
+			return stats
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	trimmedID := strings.TrimSpace(monitorID)
+	var totalLatency, totalSamples int64
+	var minLatency, maxLatency, lastLatency int64
+	isFirst := true
+
+	for _, l := range s.logs {
+		if trimmedID != "" && l.MonitorID != trimmedID {
+			continue
+		}
+		totalSamples++
+		totalLatency += l.Latency
+		if isFirst {
+			minLatency = l.Latency
+			maxLatency = l.Latency
+			lastLatency = l.Latency
+			isFirst = false
+		} else {
+			if l.Latency < minLatency {
+				minLatency = l.Latency
+			}
+			if l.Latency > maxLatency {
+				maxLatency = l.Latency
+			}
+		}
+	}
+
+	if trimmedID != "" {
+		for _, m := range s.monitors {
+			if m.ID == trimmedID {
+				lastLatency = m.LastLatency
+				break
+			}
+		}
+	}
+
+	avgLatency := int64(0)
+	if totalSamples > 0 {
+		avgLatency = totalLatency / totalSamples
+	} else if lastLatency > 0 {
+		avgLatency = lastLatency
+		minLatency = lastLatency
+		maxLatency = lastLatency
+	}
+
+	return models.LatencyStats{
+		MonitorID:     trimmedID,
+		AvgLatencyMs:  avgLatency,
+		LastLatencyMs: lastLatency,
+		MinLatencyMs:  minLatency,
+		MaxLatencyMs:  maxLatency,
+		TotalSamples:  totalSamples,
+	}
+}
+
 // ClearLogs empties the execution logs directly in MySQL or fallback store.
 func (s *Store) ClearLogs() int {
 	if s.mysql != nil {

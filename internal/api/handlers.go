@@ -519,6 +519,23 @@ func (a *API) ExecutionStatsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
+// ExecutionLatencyHandler returns dedicated latency metrics directly from database without fetching execution logs.
+func (a *API) ExecutionLatencyHandler(c *gin.Context) {
+	monitorID := c.Query("monitor_id")
+	if monitorID == "" {
+		monitorID = c.Query("monitor")
+	}
+	stats := a.store.GetLatencyStats(monitorID)
+	c.JSON(http.StatusOK, stats)
+}
+
+// MonitorLatencyHandler returns dedicated latency metrics for a specific monitor.
+func (a *API) MonitorLatencyHandler(c *gin.Context) {
+	id := c.Param("id")
+	stats := a.store.GetLatencyStats(id)
+	c.JSON(http.StatusOK, stats)
+}
+
 // ClearExecutionsHandler clears all logs.
 func (a *API) ClearExecutionsHandler(c *gin.Context) {
 	count := a.store.ClearLogs()

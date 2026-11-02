@@ -188,6 +188,16 @@ type ExecutionStats struct {
 	AvgLatencyMs int64  `json:"avgLatencyMs"`
 }
 
+// LatencyStats represents dedicated latency metrics aggregated directly from database.
+type LatencyStats struct {
+	MonitorID     string `json:"monitorId,omitempty"`
+	AvgLatencyMs  int64  `json:"avgLatencyMs"`
+	LastLatencyMs int64  `json:"lastLatencyMs"`
+	MinLatencyMs  int64  `json:"minLatencyMs"`
+	MaxLatencyMs  int64  `json:"maxLatencyMs"`
+	TotalSamples  int64  `json:"totalSamples"`
+}
+
 // CreateMonitorRequest represents the payload to create a new monitor.
 type CreateMonitorRequest struct {
 	Name            string      `json:"name"`

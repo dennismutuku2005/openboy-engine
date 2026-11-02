@@ -181,6 +181,8 @@ func TestTelemetryAndDataEndpoints(t *testing.T) {
 		"/api/stats",
 		"/api/monitors",
 		"/api/executions",
+		"/api/executions/stats",
+		"/api/executions/latency",
 		"/api/batchers",
 		"/api/incidents",
 		"/api/auth/me",
@@ -194,6 +196,78 @@ func TestTelemetryAndDataEndpoints(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200 on %s, got %d (body: %s)", ep, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestExecutionLatencyEndpoints(t *testing.T) {
+	apiService, router, token := setupTestRouter(t)
+
+	// Create test monitor
+	mon := apiService.store.CreateMonitor(models.Monitor{
+		Name:            "Latency Test Endpoint",
+		URL:             "https://example.com/latency",
+		Method:          "GET",
+		Interval:        "10s",
+		IntervalSeconds: 10,
+		Status:          "active",
+		LastLatency:     120,
+	})
+
+	// Record sample pings
+	apiService.store.RecordPingResult(models.ExecutionLog{
+		ID:          "log-lat-1",
+		MonitorID:   mon.ID,
+		MonitorName: mon.Name,
+		URL:         mon.URL,
+		Status:      200,
+		Latency:     100,
+		OK:          true,
+	})
+	apiService.store.RecordPingResult(models.ExecutionLog{
+		ID:          "log-lat-2",
+		MonitorID:   mon.ID,
+		MonitorName: mon.Name,
+		URL:         mon.URL,
+		Status:      200,
+		Latency:     200,
+		OK:          true,
+	})
+
+	// 1. Query /api/executions/latency?monitor_id=...
+	req, _ := http.NewRequest(http.MethodGet, "/api/executions/latency?monitor_id="+mon.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on executions/latency, got %d", w.Code)
+	}
+
+	var stats models.LatencyStats
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("failed to unmarshal latency stats: %v", err)
+	}
+	if stats.AvgLatencyMs != 150 {
+		t.Errorf("expected avgLatencyMs 150, got %d", stats.AvgLatencyMs)
+	}
+	if stats.TotalSamples != 2 {
+		t.Errorf("expected totalSamples 2, got %d", stats.TotalSamples)
+	}
+
+	// 2. Query /api/monitors/:id/latency
+	req, _ = http.NewRequest(http.MethodGet, "/api/monitors/"+mon.ID+"/latency", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /monitors/:id/latency, got %d", w.Code)
+	}
+
+	var monStats models.LatencyStats
+	if err := json.Unmarshal(w.Body.Bytes(), &monStats); err != nil {
+		t.Fatalf("failed to unmarshal monitor latency stats: %v", err)
+	}
+	if monStats.AvgLatencyMs != 150 {
+		t.Errorf("expected avgLatencyMs 150, got %d", monStats.AvgLatencyMs)
 	}
 }
 

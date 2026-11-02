@@ -567,6 +567,61 @@ func (m *MySQLSync) GetExecutionStats(monitorID string) (models.ExecutionStats, 
 	return stats, nil
 }
 
+// GetLatencyStats calculates dedicated average, min, max, and latest latency directly from execution_logs and monitors.
+func (m *MySQLSync) GetLatencyStats(monitorID string) (models.LatencyStats, error) {
+	var stats models.LatencyStats
+	if m == nil || m.db == nil {
+		return stats, nil
+	}
+
+	trimmedID := strings.TrimSpace(monitorID)
+	stats.MonitorID = trimmedID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	whereClause := "1=1"
+	var args []interface{}
+	if trimmedID != "" {
+		whereClause = "monitor_id = ?"
+		args = append(args, trimmedID)
+
+		// Fetch last_latency_ms from monitors table
+		_ = m.db.QueryRowContext(ctx, "SELECT COALESCE(last_latency_ms, 0) FROM monitors WHERE id = ?", trimmedID).Scan(&stats.LastLatencyMs)
+	} else {
+		// Fetch latest latency from execution_logs across all monitors
+		_ = m.db.QueryRowContext(ctx, "SELECT COALESCE(latency_ms, 0) FROM execution_logs ORDER BY timestamp DESC LIMIT 1").Scan(&stats.LastLatencyMs)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			COALESCE(ROUND(AVG(latency_ms)), 0),
+			COALESCE(MIN(latency_ms), 0),
+			COALESCE(MAX(latency_ms), 0),
+			COUNT(*)
+		FROM execution_logs
+		WHERE %s`, whereClause)
+
+	err := m.db.QueryRowContext(ctx, query, args...).Scan(
+		&stats.AvgLatencyMs,
+		&stats.MinLatencyMs,
+		&stats.MaxLatencyMs,
+		&stats.TotalSamples,
+	)
+	if err != nil {
+		return stats, err
+	}
+
+	// If no execution logs exist in database yet, but monitor has a recorded lastLatency, use it as baseline
+	if stats.TotalSamples == 0 && stats.LastLatencyMs > 0 {
+		stats.AvgLatencyMs = stats.LastLatencyMs
+		stats.MinLatencyMs = stats.LastLatencyMs
+		stats.MaxLatencyMs = stats.LastLatencyMs
+	}
+
+	return stats, nil
+}
+
 // ClearLogs deletes all execution logs directly from MySQL.
 func (m *MySQLSync) ClearLogs() int {
 	if m == nil || m.db == nil {
