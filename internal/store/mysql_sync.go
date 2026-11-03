@@ -720,17 +720,98 @@ func (m *MySQLSync) GetTimeline(monitorID string, limit int) (models.TimelineRes
 	return resp, nil
 }
 
-// ClearLogs deletes all execution logs directly from MySQL.
-func (m *MySQLSync) ClearLogs() int {
+// ClearLogs deletes execution logs directly from MySQL with optional filtering (older than N days or by monitor).
+func (m *MySQLSync) ClearLogs(days int, monitorID string) int {
 	if m == nil || m.db == nil {
 		return 0
 	}
-	res, err := m.db.Exec("DELETE FROM execution_logs")
+	query := "DELETE FROM execution_logs WHERE 1=1"
+	var args []interface{}
+	if days > 0 {
+		query += " AND timestamp < (NOW() - INTERVAL ? DAY)"
+		args = append(args, days)
+	}
+	if strings.TrimSpace(monitorID) != "" {
+		query += " AND monitor_id = ?"
+		args = append(args, strings.TrimSpace(monitorID))
+	}
+	res, err := m.db.Exec(query, args...)
 	if err != nil {
+		logger.Warn("Failed to clear execution logs: %v", err)
 		return 0
 	}
 	affected, _ := res.RowsAffected()
 	return int(affected)
+}
+
+// ResetMonitorCounters resets total_pings, failed_pings, consecutive_fails, and uptime back to 100% baseline.
+func (m *MySQLSync) ResetMonitorCounters(monitorID string) int {
+	if m == nil || m.db == nil {
+		return 0
+	}
+	query := "UPDATE monitors SET total_pings = 0, failed_pings = 0, consecutive_fails = 0, uptime_pct = '100%', updated_at = NOW() WHERE 1=1"
+	var args []interface{}
+	if strings.TrimSpace(monitorID) != "" {
+		query += " AND id = ?"
+		args = append(args, strings.TrimSpace(monitorID))
+	}
+	res, err := m.db.Exec(query, args...)
+	if err != nil {
+		logger.Warn("Failed to reset monitor counters: %v", err)
+		return 0
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected)
+}
+
+// ClearIncidents deletes incidents directly from MySQL (optionally filtered by status, e.g. 'resolved').
+func (m *MySQLSync) ClearIncidents(status string) int {
+	if m == nil || m.db == nil {
+		return 0
+	}
+	query := "DELETE FROM incidents WHERE 1=1"
+	var args []interface{}
+	if strings.TrimSpace(status) != "" {
+		query += " AND LOWER(status) = ?"
+		args = append(args, strings.ToLower(strings.TrimSpace(status)))
+	}
+	res, err := m.db.Exec(query, args...)
+	if err != nil {
+		logger.Warn("Failed to clear incidents: %v", err)
+		return 0
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected)
+}
+
+// GetMaintenanceStats calculates real-time storage metrics and record counts across tables.
+func (m *MySQLSync) GetMaintenanceStats() models.MaintenanceStats {
+	var stats models.MaintenanceStats
+	if m == nil || m.db == nil {
+		return stats
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var minTs, maxTs *time.Time
+	_ = m.db.QueryRowContext(ctx, "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM execution_logs").Scan(&stats.TotalExecutionLogs, &minTs, &maxTs)
+	if minTs != nil {
+		stats.OldestLogTimestamp = minTs.UTC().Format("2006-01-02 15:04:05")
+	}
+	if maxTs != nil {
+		stats.NewestLogTimestamp = maxTs.UTC().Format("2006-01-02 15:04:05")
+	}
+	_ = m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM incidents").Scan(&stats.TotalIncidents)
+	_ = m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM monitors").Scan(&stats.TotalMonitors)
+	_ = m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM batchers").Scan(&stats.TotalBatchers)
+
+	// Approximate size: ~512 bytes per execution log row + indexes
+	stats.EstimatedStorageMB = float64(stats.TotalExecutionLogs*512) / (1024.0 * 1024.0)
+	if stats.EstimatedStorageMB < 0.01 && stats.TotalExecutionLogs > 0 {
+		stats.EstimatedStorageMB = 0.01
+	}
+
+	return stats
 }
 
 // DeleteLog deletes a single execution log directly from MySQL by ID.

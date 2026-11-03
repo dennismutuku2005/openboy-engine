@@ -187,6 +187,7 @@ func TestTelemetryAndDataEndpoints(t *testing.T) {
 		"/api/executions/timeline",
 		"/api/batchers",
 		"/api/incidents",
+		"/api/maintenance/stats",
 		"/api/auth/me",
 	}
 
@@ -337,6 +338,77 @@ func TestExecutionTimelineEndpoints(t *testing.T) {
 	}
 	if len(monTimelineResp.Timeline) != 5 {
 		t.Errorf("expected 5 timeline items, got %d", len(monTimelineResp.Timeline))
+	}
+}
+
+func TestDataManagementMaintenance(t *testing.T) {
+	apiService, router, token := setupTestRouter(t)
+
+	// Create monitor and logs
+	mon := apiService.store.CreateMonitor(models.Monitor{
+		Name:            "Maintenance Test Endpoint",
+		URL:             "https://example.com/test",
+		IntervalSeconds: 30,
+		Status:          "active",
+		TotalPings:      100,
+		FailedPings:     10,
+	})
+
+	for i := 1; i <= 3; i++ {
+		apiService.store.RecordPingResult(models.ExecutionLog{
+			ID:          fmt.Sprintf("maint-log-%d", i),
+			MonitorID:   mon.ID,
+			MonitorName: mon.Name,
+			URL:         mon.URL,
+			Status:      200,
+			Latency:     50,
+			OK:          true,
+		})
+	}
+
+	// 1. Check Maintenance Stats
+	req, _ := http.NewRequest(http.MethodGet, "/api/maintenance/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/maintenance/stats, got %d", w.Code)
+	}
+
+	var mStats models.MaintenanceStats
+	if err := json.Unmarshal(w.Body.Bytes(), &mStats); err != nil {
+		t.Fatalf("failed to decode maintenance stats: %v", err)
+	}
+	if mStats.TotalExecutionLogs < 3 {
+		t.Errorf("expected at least 3 logs, got %d", mStats.TotalExecutionLogs)
+	}
+
+	// 2. Reset Monitor Counters
+	req, _ = http.NewRequest(http.MethodPost, "/api/maintenance/reset-monitors?monitor_id="+mon.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on reset-monitors, got %d", w.Code)
+	}
+
+	updatedMon, ok := apiService.store.GetMonitor(mon.ID)
+	if !ok || updatedMon.TotalPings != 0 {
+		t.Errorf("expected monitor TotalPings to be 0 after reset, got %d", updatedMon.TotalPings)
+	}
+
+	// 3. Clear All Logs
+	req, _ = http.NewRequest(http.MethodDelete, "/api/executions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on DELETE /api/executions, got %d", w.Code)
+	}
+
+	postLogs, _ := apiService.store.GetLogs(10, 0, "", "")
+	if len(postLogs) != 0 {
+		t.Errorf("expected 0 logs after clear, got %d", len(postLogs))
 	}
 }
 

@@ -118,7 +118,10 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 				"GET  /api/incidents/:id",
 				"PUT  /api/incidents/:id",
 				"POST /api/incidents/:id/resolve",
+				"DELETE /api/incidents",
 				"DELETE /api/incidents/:id",
+				"GET  /api/maintenance/stats",
+				"POST /api/maintenance/reset-monitors",
 			},
 		})
 	})
@@ -179,7 +182,12 @@ func NewRouter(apiService *API, staticDir ...string) *gin.Engine {
 			protected.GET("/incidents/:id", apiService.GetIncidentHandler)
 			protected.PUT("/incidents/:id", apiService.UpdateIncidentHandler)
 			protected.POST("/incidents/:id/resolve", apiService.ResolveIncidentHandler)
+			protected.DELETE("/incidents", apiService.ClearIncidentsHandler)
 			protected.DELETE("/incidents/:id", apiService.DeleteIncidentHandler)
+
+			// Data Management & Maintenance
+			protected.GET("/maintenance/stats", apiService.MaintenanceStatsHandler)
+			protected.POST("/maintenance/reset-monitors", apiService.ResetMonitorCountersHandler)
 		}
 	}
 

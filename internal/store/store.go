@@ -741,17 +741,123 @@ func (s *Store) GetTimeline(monitorID string, limit int) models.TimelineResponse
 	}
 }
 
-// ClearLogs empties the execution logs directly in MySQL or fallback store.
-func (s *Store) ClearLogs() int {
+// ClearLogs empties the execution logs directly in MySQL or fallback store with optional filtering.
+func (s *Store) ClearLogs(days int, monitorID string) int {
 	if s.mysql != nil {
-		return s.mysql.ClearLogs()
+		return s.mysql.ClearLogs(days, monitorID)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	count := len(s.logs)
-	s.logs = make([]models.ExecutionLog, 0, 1000)
-	return count
+
+	trimmedID := strings.TrimSpace(monitorID)
+	cutoff := time.Time{}
+	if days > 0 {
+		cutoff = time.Now().AddDate(0, 0, -days)
+	}
+
+	var remaining []models.ExecutionLog
+	cleared := 0
+	for _, l := range s.logs {
+		matchMonitor := trimmedID == "" || l.MonitorID == trimmedID
+		matchTime := days <= 0 || l.Timestamp.Before(cutoff)
+		if matchMonitor && matchTime {
+			cleared++
+		} else {
+			remaining = append(remaining, l)
+		}
+	}
+	s.logs = remaining
+	return cleared
+}
+
+// ResetMonitorCounters resets total_pings, failed_pings, consecutive_fails, and uptime across monitors.
+func (s *Store) ResetMonitorCounters(monitorID string) int {
+	if s.mysql != nil {
+		return s.mysql.ResetMonitorCounters(monitorID)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	trimmedID := strings.TrimSpace(monitorID)
+	resetCount := 0
+	for id, m := range s.monitors {
+		if trimmedID == "" || id == trimmedID {
+			m.TotalPings = 0
+			m.FailedPings = 0
+			m.ConsecutiveFails = 0
+			m.Uptime = "100%"
+			m.UpdatedAt = time.Now()
+			s.monitors[id] = m
+			resetCount++
+		}
+	}
+	return resetCount
+}
+
+// ClearIncidents removes incidents directly in MySQL or fallback store.
+func (s *Store) ClearIncidents(status string) int {
+	if s.mysql != nil {
+		return s.mysql.ClearIncidents(status)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	trimmedStatus := strings.ToLower(strings.TrimSpace(status))
+	remaining := make(map[string]*models.Incident)
+	cleared := 0
+	for id, inc := range s.incidents {
+		if trimmedStatus == "" || strings.ToLower(inc.Status) == trimmedStatus {
+			cleared++
+		} else {
+			remaining[id] = inc
+		}
+	}
+	s.incidents = remaining
+	return cleared
+}
+
+// GetMaintenanceStats returns real-time storage metrics and table row counts.
+func (s *Store) GetMaintenanceStats() models.MaintenanceStats {
+	if s.mysql != nil {
+		return s.mysql.GetMaintenanceStats()
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var oldest, newest time.Time
+	if len(s.logs) > 0 {
+		oldest = s.logs[0].Timestamp
+		newest = s.logs[len(s.logs)-1].Timestamp
+	}
+
+	logsCount := int64(len(s.logs))
+	mb := float64(logsCount*512) / (1024.0 * 1024.0)
+	if mb < 0.01 && logsCount > 0 {
+		mb = 0.01
+	}
+
+	oldestStr := ""
+	newestStr := ""
+	if !oldest.IsZero() {
+		oldestStr = oldest.UTC().Format("2006-01-02 15:04:05")
+	}
+	if !newest.IsZero() {
+		newestStr = newest.UTC().Format("2006-01-02 15:04:05")
+	}
+
+	return models.MaintenanceStats{
+		TotalExecutionLogs: logsCount,
+		TotalIncidents:     int64(len(s.incidents)),
+		TotalMonitors:      len(s.monitors),
+		TotalBatchers:      len(s.batchers),
+		OldestLogTimestamp: oldestStr,
+		NewestLogTimestamp: newestStr,
+		EstimatedStorageMB: mb,
+	}
 }
 
 // DeleteLog removes a single log directly in MySQL or fallback store.

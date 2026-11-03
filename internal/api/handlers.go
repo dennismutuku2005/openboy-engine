@@ -555,12 +555,48 @@ func (a *API) MonitorTimelineHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, timeline)
 }
 
-// ClearExecutionsHandler clears all logs.
+// ClearExecutionsHandler clears execution logs with optional filtering by days or monitor.
 func (a *API) ClearExecutionsHandler(c *gin.Context) {
-	count := a.store.ClearLogs()
-	logger.Info("Cleared %d execution logs", count)
+	days, _ := strconv.Atoi(c.Query("days"))
+	monitorID := c.Query("monitor_id")
+	if monitorID == "" {
+		monitorID = c.Query("monitor")
+	}
+	count := a.store.ClearLogs(days, monitorID)
+	logger.Info("Cleared %d execution logs (days: %d, monitor: %s)", count, days, monitorID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Execution logs cleared successfully",
+		"cleared": count,
+	})
+}
+
+// MaintenanceStatsHandler returns database size, table row counts, and audit retention info.
+func (a *API) MaintenanceStatsHandler(c *gin.Context) {
+	stats := a.store.GetMaintenanceStats()
+	c.JSON(http.StatusOK, stats)
+}
+
+// ResetMonitorCountersHandler resets total_pings and failed_pings back to 100% baseline.
+func (a *API) ResetMonitorCountersHandler(c *gin.Context) {
+	monitorID := c.Query("monitor_id")
+	if monitorID == "" {
+		monitorID = c.Query("monitor")
+	}
+	count := a.store.ResetMonitorCounters(monitorID)
+	logger.Info("Reset counters for %d monitors", count)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Monitor statistics and counters reset successfully",
+		"reset":   count,
+	})
+}
+
+// ClearIncidentsHandler purges incidents (optionally by status, e.g. 'resolved').
+func (a *API) ClearIncidentsHandler(c *gin.Context) {
+	status := c.Query("status")
+	count := a.store.ClearIncidents(status)
+	logger.Info("Cleared %d incidents (status: %s)", count, status)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Incidents cleared successfully",
 		"cleared": count,
 	})
 }
