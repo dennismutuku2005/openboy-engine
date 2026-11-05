@@ -626,6 +626,76 @@ func (a *API) ClearIncidentsHandler(c *gin.Context) {
 	})
 }
 
+// BatchDeleteIncidentsHandler handles bulk deletion of marked incidents via JSON body or query parameters.
+func (a *API) BatchDeleteIncidentsHandler(c *gin.Context) {
+	var reqBody struct {
+		IDs []string `json:"ids"`
+	}
+	_ = c.ShouldBindJSON(&reqBody)
+
+	var idList []string
+	if len(reqBody.IDs) > 0 {
+		idList = reqBody.IDs
+	} else if idsParam := c.Query("ids"); strings.TrimSpace(idsParam) != "" {
+		for _, part := range strings.Split(idsParam, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				idList = append(idList, trimmed)
+			}
+		}
+	}
+
+	if len(idList) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No incidents specified for deletion",
+			"cleared": 0,
+		})
+		return
+	}
+
+	count := a.store.DeleteIncidentsByIDs(idList)
+	logger.Info("Batch deleted %d marked incidents", count)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Incidents cleared successfully",
+		"cleared": count,
+	})
+}
+
+// BatchResolveIncidentsHandler handles bulk resolution of marked incidents via JSON body or query parameters.
+func (a *API) BatchResolveIncidentsHandler(c *gin.Context) {
+	var reqBody struct {
+		IDs []string `json:"ids"`
+	}
+	_ = c.ShouldBindJSON(&reqBody)
+
+	var idList []string
+	if len(reqBody.IDs) > 0 {
+		idList = reqBody.IDs
+	} else if idsParam := c.Query("ids"); strings.TrimSpace(idsParam) != "" {
+		for _, part := range strings.Split(idsParam, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				idList = append(idList, trimmed)
+			}
+		}
+	}
+
+	if len(idList) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No incidents specified for resolution",
+			"resolved": 0,
+		})
+		return
+	}
+
+	count := a.store.ResolveIncidentsByIDs(idList)
+	logger.Info("Batch resolved %d marked incidents", count)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Incidents resolved successfully",
+		"resolved": count,
+	})
+}
+
 // DeleteExecutionHandler deletes a single log.
 func (a *API) DeleteExecutionHandler(c *gin.Context) {
 	id := c.Param("id")

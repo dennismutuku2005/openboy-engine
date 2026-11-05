@@ -848,6 +848,36 @@ func (s *Store) DeleteIncidentsByIDs(ids []string) int {
 	return cleared
 }
 
+// ResolveIncidentsByIDs resolves multiple incidents by their IDs in MySQL or memory.
+func (s *Store) ResolveIncidentsByIDs(ids []string) int {
+	if s.mysql != nil {
+		return s.mysql.ResolveIncidentsByIDs(ids)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idMap := make(map[string]bool)
+	for _, id := range ids {
+		idMap[strings.TrimSpace(id)] = true
+	}
+
+	now := time.Now()
+	resolvedCount := 0
+	for id := range idMap {
+		if inc, ok := s.incidents[id]; ok && inc.Status != "resolved" {
+			durMinutes := int(now.Sub(inc.StartedAt).Minutes())
+			durationStr := fmt.Sprintf("%dm", durMinutes)
+			inc.Status = "resolved"
+			inc.ResolvedAt = &now
+			inc.Duration = durationStr
+			s.incidents[id] = inc
+			resolvedCount++
+		}
+	}
+	return resolvedCount
+}
+
 // RecordDailyCleanup logs the time and count of the daily midnight purge.
 func (s *Store) RecordDailyCleanup(t time.Time, count int) {
 	s.mu.Lock()

@@ -434,7 +434,33 @@ func TestDataManagementMaintenance(t *testing.T) {
 		t.Errorf("expected inc3 to remain")
 	}
 
-	// 5. Test deleting all remaining incidents
+	// 5. Test batch resolve via POST /api/incidents/batch-resolve
+	inc4 := apiService.store.CreateIncident(models.Incident{Title: "Batch Resolve Test", Service: "Auth", Severity: "P1", Status: "investigating"})
+	body, _ := json.Marshal(map[string][]string{"ids": {inc4.ID}})
+	req, _ = http.NewRequest(http.MethodPost, "/api/incidents/batch-resolve", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on POST /api/incidents/batch-resolve, got %d", w.Code)
+	}
+	if fetched, ok := apiService.store.GetIncident(inc4.ID); !ok || fetched.Status != "resolved" {
+		t.Errorf("expected inc4 to be resolved, got %v", fetched)
+	}
+
+	// 6. Test batch delete via POST /api/incidents/batch-delete
+	body, _ = json.Marshal(map[string][]string{"ids": {inc4.ID, inc3.ID}})
+	req, _ = http.NewRequest(http.MethodPost, "/api/incidents/batch-delete", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on POST /api/incidents/batch-delete, got %d", w.Code)
+	}
+
+	// 7. Test deleting all remaining incidents
 	req, _ = http.NewRequest(http.MethodDelete, "/api/incidents", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()

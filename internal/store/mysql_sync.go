@@ -784,25 +784,85 @@ func (m *MySQLSync) ClearIncidents(status string) int {
 	return int(affected)
 }
 
-// DeleteIncidentsByIDs deletes multiple specific incidents by their IDs.
+// DeleteIncidentsByIDs deletes multiple specific incidents by their IDs in chunks.
 func (m *MySQLSync) DeleteIncidentsByIDs(ids []string) int {
 	if m == nil || m.db == nil || len(ids) == 0 {
 		return 0
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = strings.TrimSpace(id)
+
+	chunkSize := 500
+	totalDeleted := 0
+
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args[j] = strings.TrimSpace(id)
+		}
+
+		query := fmt.Sprintf("DELETE FROM incidents WHERE id IN (%s)", strings.Join(placeholders, ","))
+		res, err := m.db.Exec(query, args...)
+		if err != nil {
+			logger.Warn("Failed to delete marked incidents chunk: %v", err)
+			continue
+		}
+		affected, _ := res.RowsAffected()
+		totalDeleted += int(affected)
 	}
-	query := fmt.Sprintf("DELETE FROM incidents WHERE id IN (%s)", strings.Join(placeholders, ","))
-	res, err := m.db.Exec(query, args...)
-	if err != nil {
-		logger.Warn("Failed to delete marked incidents: %v", err)
+
+	return totalDeleted
+}
+
+// ResolveIncidentsByIDs resolves multiple incidents by their IDs in chunks.
+func (m *MySQLSync) ResolveIncidentsByIDs(ids []string) int {
+	if m == nil || m.db == nil || len(ids) == 0 {
 		return 0
 	}
-	affected, _ := res.RowsAffected()
-	return int(affected)
+
+	now := time.Now()
+	chunkSize := 500
+	totalResolved := 0
+
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(chunk)+1)
+		args = append(args, now)
+
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args = append(args, strings.TrimSpace(id))
+		}
+
+		query := fmt.Sprintf(`
+			UPDATE incidents 
+			SET status = 'resolved', resolved_at = ?, duration = CONCAT(TIMESTAMPDIFF(MINUTE, started_at, NOW()), 'm')
+			WHERE id IN (%s) AND status != 'resolved'`,
+			strings.Join(placeholders, ","),
+		)
+
+		res, err := m.db.Exec(query, args...)
+		if err != nil {
+			logger.Warn("Failed to batch resolve incidents chunk: %v", err)
+			continue
+		}
+		affected, _ := res.RowsAffected()
+		totalResolved += int(affected)
+	}
+
+	return totalResolved
 }
 
 // GetMaintenanceStats calculates real-time storage metrics and record counts across tables.
