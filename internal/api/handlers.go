@@ -590,11 +590,36 @@ func (a *API) ResetMonitorCountersHandler(c *gin.Context) {
 	})
 }
 
-// ClearIncidentsHandler purges incidents (optionally by status, e.g. 'resolved').
+// ClearIncidentsHandler purges incidents (by IDs list, optionally by status, e.g. 'resolved', or all).
 func (a *API) ClearIncidentsHandler(c *gin.Context) {
-	status := c.Query("status")
-	count := a.store.ClearIncidents(status)
-	logger.Info("Cleared %d incidents (status: %s)", count, status)
+	idsParam := c.Query("ids")
+	var reqBody struct {
+		IDs []string `json:"ids"`
+	}
+	_ = c.ShouldBindJSON(&reqBody)
+
+	var idList []string
+	if len(reqBody.IDs) > 0 {
+		idList = reqBody.IDs
+	} else if strings.TrimSpace(idsParam) != "" {
+		for _, part := range strings.Split(idsParam, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				idList = append(idList, trimmed)
+			}
+		}
+	}
+
+	var count int
+	if len(idList) > 0 {
+		count = a.store.DeleteIncidentsByIDs(idList)
+		logger.Info("Deleted %d marked incidents", count)
+	} else {
+		status := c.Query("status")
+		count = a.store.ClearIncidents(status)
+		logger.Info("Cleared %d incidents (status: %s)", count, status)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Incidents cleared successfully",
 		"cleared": count,

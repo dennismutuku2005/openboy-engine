@@ -784,6 +784,27 @@ func (m *MySQLSync) ClearIncidents(status string) int {
 	return int(affected)
 }
 
+// DeleteIncidentsByIDs deletes multiple specific incidents by their IDs.
+func (m *MySQLSync) DeleteIncidentsByIDs(ids []string) int {
+	if m == nil || m.db == nil || len(ids) == 0 {
+		return 0
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = strings.TrimSpace(id)
+	}
+	query := fmt.Sprintf("DELETE FROM incidents WHERE id IN (%s)", strings.Join(placeholders, ","))
+	res, err := m.db.Exec(query, args...)
+	if err != nil {
+		logger.Warn("Failed to delete marked incidents: %v", err)
+		return 0
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected)
+}
+
 // GetMaintenanceStats calculates real-time storage metrics and record counts across tables.
 func (m *MySQLSync) GetMaintenanceStats() models.MaintenanceStats {
 	var stats models.MaintenanceStats
@@ -810,6 +831,12 @@ func (m *MySQLSync) GetMaintenanceStats() models.MaintenanceStats {
 	if stats.EstimatedStorageMB < 0.01 && stats.TotalExecutionLogs > 0 {
 		stats.EstimatedStorageMB = 0.01
 	}
+
+	// Automatic daily midnight log purge indicator
+	stats.DailyAutoCleanupEnabled = true
+	now := time.Now()
+	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	stats.NextDailyCleanup = nextMidnight.Format("2006-01-02 15:04:05")
 
 	return stats
 }

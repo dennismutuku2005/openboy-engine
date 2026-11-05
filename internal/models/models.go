@@ -219,13 +219,16 @@ type TimelineResponse struct {
 
 // MaintenanceStats represents database storage and retention KPIs.
 type MaintenanceStats struct {
-	TotalExecutionLogs int64   `json:"totalExecutionLogs"`
-	TotalIncidents     int64   `json:"totalIncidents"`
-	TotalMonitors      int     `json:"totalMonitors"`
-	TotalBatchers      int     `json:"totalBatchers"`
-	OldestLogTimestamp string  `json:"oldestLogTimestamp,omitempty"`
-	NewestLogTimestamp string  `json:"newestLogTimestamp,omitempty"`
-	EstimatedStorageMB float64 `json:"estimatedStorageMb"`
+	TotalExecutionLogs      int64   `json:"totalExecutionLogs"`
+	TotalIncidents          int64   `json:"totalIncidents"`
+	TotalMonitors           int     `json:"totalMonitors"`
+	TotalBatchers           int     `json:"totalBatchers"`
+	OldestLogTimestamp      string  `json:"oldestLogTimestamp,omitempty"`
+	NewestLogTimestamp      string  `json:"newestLogTimestamp,omitempty"`
+	EstimatedStorageMB      float64 `json:"estimatedStorageMb"`
+	DailyAutoCleanupEnabled bool    `json:"dailyAutoCleanupEnabled"`
+	LastDailyCleanup        string  `json:"lastDailyCleanup,omitempty"`
+	NextDailyCleanup        string  `json:"nextDailyCleanup,omitempty"`
 }
 
 // CreateMonitorRequest represents the payload to create a new monitor.

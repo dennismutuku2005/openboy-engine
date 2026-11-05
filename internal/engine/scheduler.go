@@ -22,11 +22,13 @@ type Scheduler struct {
 	cronParsers    map[string]*cronexpr.Expression
 	cronMu         sync.RWMutex
 	lastCronRun    map[string]int64 // monitor/batcher ID -> unix minute
-	lastDispatched map[string]time.Time
-	dispatchMu     sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
+	lastDispatched      map[string]time.Time
+	dispatchMu          sync.RWMutex
+	lastDailyCleanupDay string
+	cleanupMu           sync.Mutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
 }
 
 // NewScheduler constructs the scheduler orchestrator.
@@ -84,6 +86,29 @@ func (sc *Scheduler) tick(now time.Time) {
 	// Evaluate batchers if on a full minute boundary
 	if now.Second() == 0 {
 		sc.evaluateBatchers(now)
+	}
+
+	// Automatic daily midnight purge: clears all execution logs every new day (preserves incidents)
+	sc.checkDailyAutoCleanup(now)
+}
+
+func (sc *Scheduler) checkDailyAutoCleanup(now time.Time) {
+	today := now.Format("2006-01-02")
+	sc.cleanupMu.Lock()
+	defer sc.cleanupMu.Unlock()
+
+	// On initial bootstrap, record current day
+	if sc.lastDailyCleanupDay == "" {
+		sc.lastDailyCleanupDay = today
+		return
+	}
+
+	// When date advances to a new day at midnight (00:00)
+	if sc.lastDailyCleanupDay != today {
+		sc.lastDailyCleanupDay = today
+		cleared := sc.store.ClearLogs(0, "")
+		sc.store.RecordDailyCleanup(now, cleared)
+		logger.Info("🌙 [Daily Auto-Cleanup] New day %s arrived! Cleared %d execution logs (incidents preserved).", today, cleared)
 	}
 }
 

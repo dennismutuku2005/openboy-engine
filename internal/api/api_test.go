@@ -410,6 +410,41 @@ func TestDataManagementMaintenance(t *testing.T) {
 	if len(postLogs) != 0 {
 		t.Errorf("expected 0 logs after clear, got %d", len(postLogs))
 	}
+
+	// 4. Test deleting marked incidents by IDs
+	inc1 := apiService.store.CreateIncident(models.Incident{Title: "Outage 1", Status: "investigating"})
+	inc2 := apiService.store.CreateIncident(models.Incident{Title: "Outage 2", Status: "investigating"})
+	inc3 := apiService.store.CreateIncident(models.Incident{Title: "Outage 3", Status: "resolved"})
+
+	req, _ = http.NewRequest(http.MethodDelete, fmt.Sprintf("/api/incidents?ids=%s,%s", inc1.ID, inc2.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on DELETE /api/incidents?ids=..., got %d", w.Code)
+	}
+
+	if _, ok := apiService.store.GetIncident(inc1.ID); ok {
+		t.Errorf("expected inc1 to be deleted")
+	}
+	if _, ok := apiService.store.GetIncident(inc2.ID); ok {
+		t.Errorf("expected inc2 to be deleted")
+	}
+	if _, ok := apiService.store.GetIncident(inc3.ID); !ok {
+		t.Errorf("expected inc3 to remain")
+	}
+
+	// 5. Test deleting all remaining incidents
+	req, _ = http.NewRequest(http.MethodDelete, "/api/incidents", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on DELETE /api/incidents, got %d", w.Code)
+	}
+	if len(apiService.store.GetAllIncidents()) != 0 {
+		t.Errorf("expected 0 incidents remaining, got %d", len(apiService.store.GetAllIncidents()))
+	}
 }
 
 func BenchmarkGinMonitorsEndpoint(b *testing.B) {

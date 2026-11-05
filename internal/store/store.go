@@ -5,11 +5,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"openboy-engine/internal/models"
 	"openboy-engine/pkg/logger"
 )
+
+var incidentSeq int64
 
 type persistedState struct {
 	Users     []models.User     `json:"users"`
@@ -31,9 +34,11 @@ type Store struct {
 	startTime    time.Time
 	totalRuns    int64
 	totalLatency int64
-	subscribers  map[chan models.ExecutionLog]struct{}
-	subMu        sync.RWMutex
-	mysql        *MySQLSync
+	subscribers           map[chan models.ExecutionLog]struct{}
+	subMu                 sync.RWMutex
+	mysql                 *MySQLSync
+	lastDailyCleanupTime  time.Time
+	lastDailyCleanupCount int
 }
 
 // NewStore initializes a store, directly delegating to MySQL when connected.
@@ -819,6 +824,38 @@ func (s *Store) ClearIncidents(status string) int {
 	return cleared
 }
 
+// DeleteIncidentsByIDs removes multiple specific incidents by their IDs.
+func (s *Store) DeleteIncidentsByIDs(ids []string) int {
+	if s.mysql != nil {
+		return s.mysql.DeleteIncidentsByIDs(ids)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idMap := make(map[string]bool)
+	for _, id := range ids {
+		idMap[strings.TrimSpace(id)] = true
+	}
+
+	cleared := 0
+	for id := range idMap {
+		if _, ok := s.incidents[id]; ok {
+			delete(s.incidents, id)
+			cleared++
+		}
+	}
+	return cleared
+}
+
+// RecordDailyCleanup logs the time and count of the daily midnight purge.
+func (s *Store) RecordDailyCleanup(t time.Time, count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastDailyCleanupTime = t
+	s.lastDailyCleanupCount = count
+}
+
 // GetMaintenanceStats returns real-time storage metrics and table row counts.
 func (s *Store) GetMaintenanceStats() models.MaintenanceStats {
 	if s.mysql != nil {
@@ -849,14 +886,24 @@ func (s *Store) GetMaintenanceStats() models.MaintenanceStats {
 		newestStr = newest.UTC().Format("2006-01-02 15:04:05")
 	}
 
+	now := time.Now()
+	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	lastCleanupStr := ""
+	if !s.lastDailyCleanupTime.IsZero() {
+		lastCleanupStr = s.lastDailyCleanupTime.Format("2006-01-02 15:04:05")
+	}
+
 	return models.MaintenanceStats{
-		TotalExecutionLogs: logsCount,
-		TotalIncidents:     int64(len(s.incidents)),
-		TotalMonitors:      len(s.monitors),
-		TotalBatchers:      len(s.batchers),
-		OldestLogTimestamp: oldestStr,
-		NewestLogTimestamp: newestStr,
-		EstimatedStorageMB: mb,
+		TotalExecutionLogs:      logsCount,
+		TotalIncidents:          int64(len(s.incidents)),
+		TotalMonitors:           len(s.monitors),
+		TotalBatchers:           len(s.batchers),
+		OldestLogTimestamp:      oldestStr,
+		NewestLogTimestamp:      newestStr,
+		EstimatedStorageMB:      mb,
+		DailyAutoCleanupEnabled: true,
+		LastDailyCleanup:        lastCleanupStr,
+		NextDailyCleanup:        nextMidnight.Format("2006-01-02 15:04:05"),
 	}
 }
 
@@ -1045,7 +1092,7 @@ func (s *Store) GetIncident(id string) (*models.Incident, bool) {
 // CreateIncident adds a new incident directly in MySQL or fallback store.
 func (s *Store) CreateIncident(inc models.Incident) models.Incident {
 	if inc.ID == "" {
-		inc.ID = fmt.Sprintf("inc-%d", time.Now().UnixNano())
+		inc.ID = fmt.Sprintf("inc-%d-%d", time.Now().UnixNano(), atomic.AddInt64(&incidentSeq, 1))
 	}
 	if inc.Status == "" {
 		inc.Status = "investigating"
