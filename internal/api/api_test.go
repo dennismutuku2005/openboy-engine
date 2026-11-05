@@ -150,6 +150,30 @@ func TestMonitorsCrudWithGin(t *testing.T) {
 		t.Errorf("expected 200 on get monitor, got %d", w.Code)
 	}
 
+	// 2b. Update the monitor (edit schedule)
+	updateBody := map[string]interface{}{
+		"name":            "Pace Wisp Gateway Updated",
+		"url":             mockServer.URL,
+		"method":          "POST",
+		"interval":        "10s",
+		"intervalSeconds": 10,
+		"intervalLabel":   "Every 10 seconds",
+	}
+	upBytes, _ := json.Marshal(updateBody)
+	req, _ = http.NewRequest(http.MethodPut, "/api/monitors/"+created.ID, bytes.NewReader(upBytes))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on update monitor, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var updated models.Monitor
+	_ = json.Unmarshal(w.Body.Bytes(), &updated)
+	if updated.Name != "Pace Wisp Gateway Updated" || updated.Interval != "10s" {
+		t.Errorf("unexpected updated monitor values: %+v", updated)
+	}
+
 	// 3. Toggle monitor
 	req, _ = http.NewRequest(http.MethodPost, "/api/monitors/"+created.ID+"/toggle", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

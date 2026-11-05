@@ -432,12 +432,13 @@ func (a *API) UpdateMonitorHandler(c *gin.Context) {
 		return
 	}
 	m.ID = id
-	if !a.store.UpdateMonitor(m) {
+	updated, ok := a.store.UpdateMonitor(m)
+	if !ok {
 		writeError(c, http.StatusNotFound, "Monitor not found")
 		return
 	}
-	logger.Info("Updated monitor [%s] %s", id, m.Name)
-	c.JSON(http.StatusOK, m)
+	logger.Info("Updated monitor [%s] %s", id, updated.Name)
+	c.JSON(http.StatusOK, updated)
 }
 
 // DeleteMonitorHandler removes a monitor.

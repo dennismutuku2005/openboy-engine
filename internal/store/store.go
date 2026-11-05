@@ -327,11 +327,29 @@ func (s *Store) CreateMonitor(m models.Monitor) models.Monitor {
 }
 
 // UpdateMonitor updates a monitor directly in MySQL or fallback store.
-func (s *Store) UpdateMonitor(m models.Monitor) bool {
+func (s *Store) UpdateMonitor(m models.Monitor) (*models.Monitor, bool) {
 	if s.mysql != nil {
 		existing, err := s.mysql.GetMonitor(m.ID)
 		if err != nil || existing == nil {
-			return false
+			return nil, false
+		}
+		if m.Status == "" {
+			m.Status = existing.Status
+		}
+		if m.ExpectedStatus == 0 {
+			m.ExpectedStatus = existing.ExpectedStatus
+		}
+		if m.Timeout <= 0 {
+			m.Timeout = existing.Timeout
+		}
+		if m.Category == "" {
+			m.Category = existing.Category
+		}
+		if m.Notifications == "" {
+			m.Notifications = existing.Notifications
+		}
+		if m.UserID == "" {
+			m.UserID = existing.UserID
 		}
 		m.CreatedAt = existing.CreatedAt
 		m.TotalPings = existing.TotalPings
@@ -345,14 +363,32 @@ func (s *Store) UpdateMonitor(m models.Monitor) bool {
 		m.LastCheckedStr = existing.LastCheckedStr
 		m.UpdatedAt = time.Now()
 		s.mysql.SaveMonitor(m)
-		return true
+		return &m, true
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.monitors[m.ID]
 	if !ok {
-		return false
+		return nil, false
+	}
+	if m.Status == "" {
+		m.Status = existing.Status
+	}
+	if m.ExpectedStatus == 0 {
+		m.ExpectedStatus = existing.ExpectedStatus
+	}
+	if m.Timeout <= 0 {
+		m.Timeout = existing.Timeout
+	}
+	if m.Category == "" {
+		m.Category = existing.Category
+	}
+	if m.Notifications == "" {
+		m.Notifications = existing.Notifications
+	}
+	if m.UserID == "" {
+		m.UserID = existing.UserID
 	}
 	m.CreatedAt = existing.CreatedAt
 	m.TotalPings = existing.TotalPings
@@ -366,7 +402,7 @@ func (s *Store) UpdateMonitor(m models.Monitor) bool {
 	m.LastCheckedStr = existing.LastCheckedStr
 	m.UpdatedAt = time.Now()
 	s.monitors[m.ID] = &m
-	return true
+	return &m, true
 }
 
 // DeleteMonitor deletes a monitor and its associated logs and incidents directly from MySQL or fallback store.

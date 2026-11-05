@@ -131,7 +131,8 @@ func (m *MySQLSync) SeedIncidentsIfEmpty() error {
 func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 	rows, err := m.db.Query(`
 		SELECT id, user_id, name, url, method, interval_val, interval_seconds, interval_label,
-		       status, category, notifications, expected_status, timeout_sec, last_status,
+		       cron_expr, status, category, notifications, headers_json, body,
+		       expected_status, timeout_sec, last_status,
 		       last_latency_ms, last_checked_at, uptime_pct, total_pings, failed_pings,
 		       consecutive_fails, created_at, updated_at
 		FROM monitors`)
@@ -144,18 +145,19 @@ func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 	for rows.Next() {
 		var mon models.Monitor
 		var lastChecked sql.NullTime
-		var userID, category, notifs sql.NullString
+		var userID, category, notifs, cronExpr, headersJSON, body sql.NullString
 
 		err := rows.Scan(
 			&mon.ID, &userID, &mon.Name, &mon.URL, &mon.Method, &mon.Interval, &mon.IntervalSeconds, &mon.IntervalLabel,
-			&mon.Status, &category, &notifs, &mon.ExpectedStatus, &mon.Timeout, &mon.LastStatus,
+			&cronExpr, &mon.Status, &category, &notifs, &headersJSON, &body,
+			&mon.ExpectedStatus, &mon.Timeout, &mon.LastStatus,
 			&mon.LastLatency, &lastChecked, &mon.Uptime, &mon.TotalPings, &mon.FailedPings,
 			&mon.ConsecutiveFails, &mon.CreatedAt, &mon.UpdatedAt,
 		)
 		if err != nil {
 			continue
 		}
-		if mon.Timeout < 30 {
+		if mon.Timeout < 10 {
 			mon.Timeout = 30
 		}
 		if userID.Valid {
@@ -166,6 +168,15 @@ func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 		}
 		if notifs.Valid {
 			mon.Notifications = notifs.String
+		}
+		if cronExpr.Valid {
+			mon.CronExpr = cronExpr.String
+		}
+		if body.Valid {
+			mon.Body = body.String
+		}
+		if headersJSON.Valid && headersJSON.String != "" {
+			_ = json.Unmarshal([]byte(headersJSON.String), &mon.Headers)
 		}
 		if lastChecked.Valid {
 			t := lastChecked.Time
@@ -186,13 +197,20 @@ func (m *MySQLSync) SaveMonitor(mon models.Monitor) {
 		return
 	}
 
+	headersJSON, _ := json.Marshal(mon.Headers)
+	headersStr := string(headersJSON)
+	if len(mon.Headers) == 0 {
+		headersStr = "{}"
+	}
+
 	query := `
 		INSERT INTO monitors (
 			id, user_id, name, url, method, interval_val, interval_seconds, interval_label,
-			status, category, notifications, expected_status, timeout_sec, last_status,
+			cron_expr, status, category, notifications, headers_json, body,
+			expected_status, timeout_sec, last_status,
 			last_latency_ms, last_checked_at, uptime_pct, total_pings, failed_pings,
 			consecutive_fails, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			url = VALUES(url),
@@ -200,9 +218,12 @@ func (m *MySQLSync) SaveMonitor(mon models.Monitor) {
 			interval_val = VALUES(interval_val),
 			interval_seconds = VALUES(interval_seconds),
 			interval_label = VALUES(interval_label),
+			cron_expr = VALUES(cron_expr),
 			status = VALUES(status),
 			category = VALUES(category),
 			notifications = VALUES(notifications),
+			headers_json = VALUES(headers_json),
+			body = VALUES(body),
 			expected_status = VALUES(expected_status),
 			timeout_sec = VALUES(timeout_sec),
 			last_status = VALUES(last_status),
@@ -216,7 +237,8 @@ func (m *MySQLSync) SaveMonitor(mon models.Monitor) {
 
 	_, err := m.db.Exec(query,
 		mon.ID, mon.UserID, mon.Name, mon.URL, mon.Method, mon.Interval, mon.IntervalSeconds, mon.IntervalLabel,
-		mon.Status, mon.Category, mon.Notifications, mon.ExpectedStatus, mon.Timeout, mon.LastStatus,
+		mon.CronExpr, mon.Status, mon.Category, mon.Notifications, headersStr, mon.Body,
+		mon.ExpectedStatus, mon.Timeout, mon.LastStatus,
 		mon.LastLatency, mon.LastChecked, mon.Uptime, mon.TotalPings, mon.FailedPings,
 		mon.ConsecutiveFails, mon.CreatedAt, mon.UpdatedAt,
 	)
