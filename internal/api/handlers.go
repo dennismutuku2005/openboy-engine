@@ -811,10 +811,9 @@ func (a *API) TriggerBatcherHandler(c *gin.Context) {
 // INCIDENT HANDLERS
 // ==========================================
 
-// ListIncidentsHandler returns all incidents.
+// ListIncidentsHandler returns all incidents (incidents removed/disabled).
 func (a *API) ListIncidentsHandler(c *gin.Context) {
-	incidents := a.store.GetAllIncidents()
-	c.JSON(http.StatusOK, incidents)
+	c.JSON(http.StatusOK, []models.Incident{})
 }
 
 // CreateIncidentHandler declares a new incident.

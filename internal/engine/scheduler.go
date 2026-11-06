@@ -88,7 +88,7 @@ func (sc *Scheduler) tick(now time.Time) {
 		sc.evaluateBatchers(now)
 	}
 
-	// Automatic daily midnight purge: clears all execution logs every new day (preserves incidents)
+	// Automatic daily midnight purge: clears all execution logs every new day
 	sc.checkDailyAutoCleanup(now)
 }
 
@@ -108,7 +108,7 @@ func (sc *Scheduler) checkDailyAutoCleanup(now time.Time) {
 		sc.lastDailyCleanupDay = today
 		cleared := sc.store.ClearLogs(0, "")
 		sc.store.RecordDailyCleanup(now, cleared)
-		logger.Info("🌙 [Daily Auto-Cleanup] New day %s arrived! Cleared %d execution logs (incidents preserved).", today, cleared)
+		logger.Info("🌙 [Daily Auto-Cleanup] New day %s arrived! Cleared %d execution logs.", today, cleared)
 	}
 }
 

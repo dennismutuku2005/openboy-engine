@@ -464,31 +464,6 @@ func (s *Store) RecordPingResult(log models.ExecutionLog) {
 	// Sync directly to MySQL
 	if s.mysql != nil {
 		s.mysql.RecordLog(log)
-		if !log.OK {
-			// Deduplication: only open a new incident if there is NO active unresolved incident for this monitor!
-			activeInc, err := s.mysql.GetActiveIncidentForMonitor(log.MonitorID)
-			if err == nil && activeInc == nil {
-				newInc := models.Incident{
-					ID:           fmt.Sprintf("inc-%d", time.Now().UnixNano()),
-					MonitorID:    log.MonitorID,
-					Title:        fmt.Sprintf("Outage detected: %s", log.MonitorName),
-					Service:      log.MonitorName,
-					URL:          log.URL,
-					Severity:     "P2 - High",
-					Status:       "investigating",
-					StartedAt:    time.Now(),
-					StartedAtStr: "Just now",
-					Duration:     "Ongoing",
-					Cause:        log.Error,
-					DispatchedTo: []string{"Engine Internal", "Default Webhook"},
-				}
-				s.mysql.SaveIncident(newInc)
-				logger.Warn("Opened new incident [%s] for monitor [%s]: %s", newInc.ID, log.MonitorID, log.Error)
-			}
-		} else {
-			// Probe succeeded: resolve any active ongoing incidents for this monitor
-			_ = s.mysql.ResolveActiveIncidentsForMonitor(log.MonitorID)
-		}
 	}
 
 	// Notify SSE subscribers

@@ -59,7 +59,7 @@ func (m *MySQLSync) SeedIfEmpty() error {
 		}
 	}
 
-	_ = m.SeedIncidentsIfEmpty()
+	_ = m.PurgeIncidents()
 
 	// Ensure all existing and newly loaded monitors have at least a 30-second timeout
 	_, _ = m.db.Exec("UPDATE monitors SET timeout_sec = 30 WHERE timeout_sec < 30")
@@ -67,64 +67,16 @@ func (m *MySQLSync) SeedIfEmpty() error {
 	return nil
 }
 
-// SeedIncidentsIfEmpty populates 5 historical incidents from the past 1 week if the incidents table is empty.
-func (m *MySQLSync) SeedIncidentsIfEmpty() error {
+// PurgeIncidents completely removes all incident records from MySQL and ensures no incident logging remains.
+func (m *MySQLSync) PurgeIncidents() error {
 	if m == nil || m.db == nil {
 		return nil
 	}
-
-	var count int
-	_ = m.db.QueryRow("SELECT COUNT(*) FROM incidents").Scan(&count)
-	if count > 0 {
-		return nil
+	_, err := m.db.Exec("DELETE FROM incidents")
+	if err == nil {
+		logger.Info("Purged all incident records from database")
 	}
-
-	// Try to get an active monitor to attach the incidents to
-	var monID, monName, monURL string
-	err := m.db.QueryRow("SELECT id, name, url FROM monitors LIMIT 1").Scan(&monID, &monName, &monURL)
-	if err != nil || monID == "" {
-		monID = "mon-1"
-		monName = "Primary Web Gateway"
-		monURL = "https://speednet.pacewisp.co.ke/login"
-	}
-
-	now := time.Now()
-	historical := []struct {
-		offsetHours int
-		duration    string
-		severity    string
-		cause       string
-	}{
-		{offsetHours: 144, duration: "8m", severity: "P1 - Critical", cause: "DNS resolution timeout (NXDOMAIN: nameserver query flap)"},
-		{offsetHours: 96, duration: "14m", severity: "P1 - Critical", cause: "HTTP 502 Bad Gateway: Upstream application gateway timed out"},
-		{offsetHours: 72, duration: "6m", severity: "P2 - High", cause: "Connection Refused: Target port 443 refused TCP handshake"},
-		{offsetHours: 48, duration: "11m", severity: "P1 - Critical", cause: "HTTP 504 Gateway Timeout: Edge proxy exceeded 10s deadline"},
-		{offsetHours: 24, duration: "5m", severity: "P2 - High", cause: "HTTP 503 Service Unavailable: Rate-limit or maintenance window"},
-	}
-
-	for i, h := range historical {
-		started := now.Add(-time.Duration(h.offsetHours) * time.Hour)
-		resolved := started.Add(10 * time.Minute)
-		inc := models.Incident{
-			ID:           fmt.Sprintf("inc-week-%d", i+1),
-			MonitorID:    monID,
-			Title:        fmt.Sprintf("Downtime Outage: %s", monName),
-			Service:      monName,
-			URL:          monURL,
-			Severity:     h.severity,
-			Status:       "resolved",
-			StartedAt:    started,
-			StartedAtStr: started.Format("Jan 02, 15:04"),
-			Duration:     h.duration,
-			Cause:        h.cause,
-			DispatchedTo: []string{"Engine Internal", "Default Webhook"},
-			ResolvedAt:   &resolved,
-		}
-		m.SaveIncident(inc)
-	}
-
-	logger.Info("Seeded 5 historical downtime incidents from the past 1 week into MySQL")
-	return nil
+	return err
 }
 
 // LoadMonitors fetches all monitors from MySQL.
