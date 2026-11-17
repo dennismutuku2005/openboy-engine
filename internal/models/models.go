@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"hash/fnv"
+	"time"
+)
 
 // User represents an authenticated account in the OpenBoy ecosystem.
 type User struct {
@@ -107,9 +110,62 @@ type Monitor struct {
 	FailedPings      int64             `json:"failedPings"`
 	ConsecutiveFails int               `json:"consecutiveFails"`
 	History          []HistoryItem     `json:"history,omitempty"`
+	OffsetSeconds    int               `json:"offsetSeconds"`
 	NextRun          *time.Time        `json:"nextRun,omitempty"`
 	CreatedAt        time.Time         `json:"createdAt"`
 	UpdatedAt        time.Time         `json:"updatedAt"`
+}
+
+// ResolveIntervalSeconds standardizes interval strings and numeric seconds.
+func ResolveIntervalSeconds(interval string, explicitSec int) int {
+	if explicitSec > 0 {
+		return explicitSec
+	}
+	switch interval {
+	case "10s":
+		return 10
+	case "30s":
+		return 30
+	case "1m":
+		return 60
+	case "5m":
+		return 300
+	case "10m":
+		return 600
+	case "30m":
+		return 1800
+	case "1h":
+		return 3600
+	case "24h":
+		return 86400
+	default:
+		return 30
+	}
+}
+
+// ComputeMonitorOffset computes a stable, uniform phase offset in [0, intervalSec) using FNV-1a.
+func ComputeMonitorOffset(monitorID string, intervalSec int) int {
+	if intervalSec <= 1 || monitorID == "" {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(monitorID))
+	return int(h.Sum32() % uint32(intervalSec))
+}
+
+// ComputeNextRun calculates the next wall-clock time this monitor will trigger based on its offset.
+func ComputeNextRun(monitorID string, intervalSec int, now time.Time) time.Time {
+	if intervalSec <= 1 {
+		return now.Add(time.Second)
+	}
+	offset := ComputeMonitorOffset(monitorID, intervalSec)
+	nowUnix := now.Unix()
+	secInCycle := int(nowUnix % int64(intervalSec))
+	delay := (offset - secInCycle + intervalSec) % intervalSec
+	if delay == 0 {
+		delay = intervalSec
+	}
+	return now.Add(time.Duration(delay) * time.Second)
 }
 
 // ExecutionLog represents a single recorded ping dispatch and audit trace.

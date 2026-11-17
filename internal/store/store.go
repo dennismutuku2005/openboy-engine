@@ -264,40 +264,67 @@ func (s *Store) UpdatePassword(userID, newHash, newSalt string) bool {
 // MONITOR OPERATIONS (DIRECT DATABASE)
 // ==========================================
 
+// EnrichMonitorSchedule ensures interval standardization, deterministic phase offset, and nextRun timing.
+func (s *Store) EnrichMonitorSchedule(m *models.Monitor, now time.Time) {
+	intervalSec := models.ResolveIntervalSeconds(m.Interval, m.IntervalSeconds)
+	if intervalSec < 10 {
+		intervalSec = 10
+	}
+	m.IntervalSeconds = intervalSec
+	m.OffsetSeconds = models.ComputeMonitorOffset(m.ID, intervalSec)
+	if m.Status != "paused" {
+		nextRun := models.ComputeNextRun(m.ID, intervalSec, now)
+		m.NextRun = &nextRun
+	}
+}
+
 // GetAllMonitors returns all registered monitors directly from MySQL or fallback store.
 func (s *Store) GetAllMonitors() []models.Monitor {
+	var result []models.Monitor
 	if s.mysql != nil {
 		if mons, err := s.mysql.LoadMonitors(); err == nil {
-			return mons
+			result = mons
 		}
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]models.Monitor, 0, len(s.monitors))
-	for _, m := range s.monitors {
-		result = append(result, *m)
+	if len(result) == 0 {
+		s.mu.RLock()
+		result = make([]models.Monitor, 0, len(s.monitors))
+		for _, m := range s.monitors {
+			result = append(result, *m)
+		}
+		s.mu.RUnlock()
+	}
+
+	now := time.Now()
+	for i := range result {
+		s.EnrichMonitorSchedule(&result[i], now)
 	}
 	return result
 }
 
 // GetMonitor retrieves a single monitor directly from MySQL or fallback store.
 func (s *Store) GetMonitor(id string) (*models.Monitor, bool) {
+	var mon *models.Monitor
 	if s.mysql != nil {
 		if m, err := s.mysql.GetMonitor(id); err == nil && m != nil {
-			return m, true
+			mon = m
 		}
-		return nil, false
+	} else {
+		s.mu.RLock()
+		m, ok := s.monitors[id]
+		if ok {
+			copyM := *m
+			mon = &copyM
+		}
+		s.mu.RUnlock()
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	m, ok := s.monitors[id]
-	if !ok {
+	if mon == nil {
 		return nil, false
 	}
-	copyM := *m
-	return &copyM, true
+	s.EnrichMonitorSchedule(mon, time.Now())
+	return mon, true
 }
 
 // CreateMonitor creates a new monitor directly in MySQL or fallback store.
@@ -314,6 +341,8 @@ func (s *Store) CreateMonitor(m models.Monitor) models.Monitor {
 	now := time.Now()
 	m.CreatedAt = now
 	m.UpdatedAt = now
+
+	s.EnrichMonitorSchedule(&m, now)
 
 	if s.mysql != nil {
 		s.mysql.SaveMonitor(m)
@@ -362,6 +391,7 @@ func (s *Store) UpdateMonitor(m models.Monitor) (*models.Monitor, bool) {
 		m.LastChecked = existing.LastChecked
 		m.LastCheckedStr = existing.LastCheckedStr
 		m.UpdatedAt = time.Now()
+		s.EnrichMonitorSchedule(&m, time.Now())
 		s.mysql.SaveMonitor(m)
 		return &m, true
 	}
@@ -401,6 +431,7 @@ func (s *Store) UpdateMonitor(m models.Monitor) (*models.Monitor, bool) {
 	m.LastChecked = existing.LastChecked
 	m.LastCheckedStr = existing.LastCheckedStr
 	m.UpdatedAt = time.Now()
+	s.EnrichMonitorSchedule(&m, time.Now())
 	s.monitors[m.ID] = &m
 	return &m, true
 }
@@ -438,6 +469,7 @@ func (s *Store) ToggleMonitorStatus(id string) (*models.Monitor, bool) {
 	if s.mysql != nil {
 		mon, err := s.mysql.ToggleMonitorStatus(id)
 		if err == nil && mon != nil {
+			s.EnrichMonitorSchedule(mon, time.Now())
 			return mon, true
 		}
 		return nil, false
@@ -456,6 +488,7 @@ func (s *Store) ToggleMonitorStatus(id string) (*models.Monitor, bool) {
 	}
 	m.UpdatedAt = time.Now()
 	copyM := *m
+	s.EnrichMonitorSchedule(&copyM, time.Now())
 	return &copyM, true
 }
 

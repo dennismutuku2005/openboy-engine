@@ -15,13 +15,14 @@ import (
 
 // Scheduler coordinates timed cron invocations and high-frequency tickers.
 type Scheduler struct {
-	store          *store.Store
-	pool           *WorkerPool
-	prober         *Prober
-	ticker         *time.Ticker
-	cronParsers    map[string]*cronexpr.Expression
-	cronMu         sync.RWMutex
-	lastCronRun    map[string]int64 // monitor/batcher ID -> unix minute
+	store               *store.Store
+	pool                *WorkerPool
+	prober              *Prober
+	ticker              *time.Ticker
+	cronParsers         map[string]*cronexpr.Expression
+	cronMu              sync.RWMutex
+	lastCronRun         map[string]int64 // monitor/batcher ID -> unix minute
+	nextRun             map[string]time.Time
 	lastDispatched      map[string]time.Time
 	dispatchMu          sync.RWMutex
 	lastDailyCleanupDay string
@@ -40,6 +41,7 @@ func NewScheduler(s *store.Store, pool *WorkerPool, p *Prober) *Scheduler {
 		prober:         p,
 		cronParsers:    make(map[string]*cronexpr.Expression),
 		lastCronRun:    make(map[string]int64),
+		nextRun:        make(map[string]time.Time),
 		lastDispatched: make(map[string]time.Time),
 		ctx:            ctx,
 		cancel:         cancel,
@@ -78,6 +80,11 @@ func (sc *Scheduler) tick(now time.Time) {
 			if sc.pool.Enqueue(m) {
 				sc.dispatchMu.Lock()
 				sc.lastDispatched[m.ID] = now
+				intervalSec := models.ResolveIntervalSeconds(m.Interval, m.IntervalSeconds)
+				if intervalSec < 10 {
+					intervalSec = 10
+				}
+				sc.nextRun[m.ID] = now.Add(time.Duration(intervalSec) * time.Second)
 				sc.dispatchMu.Unlock()
 			}
 		}
@@ -154,55 +161,50 @@ func (sc *Scheduler) isMonitorDue(m *models.Monitor, now time.Time) bool {
 	}
 
 	// 2. High-frequency and interval-based (10s, 30s, 10m, custom seconds)
-	intervalSec := m.IntervalSeconds
-	if intervalSec <= 0 {
-		switch m.Interval {
-		case "10s":
-			intervalSec = 10
-		case "30s":
-			intervalSec = 30
-		case "1m":
-			intervalSec = 60
-		case "5m":
-			intervalSec = 300
-		case "10m":
-			intervalSec = 600
-		case "30m":
-			intervalSec = 1800
-		case "1h":
-			intervalSec = 3600
-		case "24h":
-			intervalSec = 86400
-		default:
-			intervalSec = 30
-		}
-	}
-
-	// Strict minimum cadence floor: OpenBoy's fastest probe cadence is 10 seconds.
-	// This prevents misconfigured monitors or rapid loops from hammering endpoints.
+	// OpenBoy enforces a strict minimum cadence floor of 10s to prevent rapid endpoint hammering.
+	intervalSec := models.ResolveIntervalSeconds(m.Interval, m.IntervalSeconds)
 	if intervalSec < 10 {
 		intervalSec = 10
 	}
 
-	// Cadence timing: measure interval from when the probe was dispatched (started),
-	// NOT from when the HTTP response finished downloading. This guarantees strict
-	// fixed intervals (e.g. exactly every 30 seconds) without drifting by network latency.
-	sc.dispatchMu.RLock()
-	lastDisp, hasDisp := sc.lastDispatched[m.ID]
-	sc.dispatchMu.RUnlock()
+	sc.dispatchMu.Lock()
+	defer sc.dispatchMu.Unlock()
 
-	if hasDisp {
-		if now.Sub(lastDisp).Seconds() < float64(intervalSec) {
-			return false
+	scheduledNext, hasScheduled := sc.nextRun[m.ID]
+	if !hasScheduled {
+		offsetSec := models.ComputeMonitorOffset(m.ID, intervalSec)
+
+		if m.LastChecked != nil {
+			lastStart := *m.LastChecked
+			if m.LastLatency > 0 {
+				lastStart = lastStart.Add(-time.Duration(m.LastLatency) * time.Millisecond)
+			}
+			elapsed := now.Sub(lastStart).Seconds()
+			if elapsed < float64(intervalSec) {
+				sc.nextRun[m.ID] = lastStart.Add(time.Duration(intervalSec) * time.Second)
+				return false
+			}
+			// Stagger starting from now using deterministic offset
+			secInCycle := int(now.Unix() % int64(intervalSec))
+			delay := (offsetSec - secInCycle + intervalSec) % intervalSec
+			sc.nextRun[m.ID] = now.Add(time.Duration(delay) * time.Second)
+		} else {
+			// Brand new monitor with nil LastChecked: slot into its deterministic offset
+			secInCycle := int(now.Unix() % int64(intervalSec))
+			delay := (offsetSec - secInCycle + intervalSec) % intervalSec
+			sc.nextRun[m.ID] = now.Add(time.Duration(delay) * time.Second)
 		}
-	} else if m.LastChecked != nil {
-		// Cold start / engine restart: estimate start of last probe by subtracting
-		// probe latency from LastChecked so we don't drift the interval.
-		lastStart := *m.LastChecked
-		if m.LastLatency > 0 {
-			lastStart = lastStart.Add(-time.Duration(m.LastLatency) * time.Millisecond)
-		}
-		if now.Sub(lastStart).Seconds() < float64(intervalSec) {
+		scheduledNext = sc.nextRun[m.ID]
+	}
+
+	// Not due yet if scheduled next run time is in the future
+	if now.Before(scheduledNext) {
+		return false
+	}
+
+	// Safety cooldown against rapid refiring
+	if lastDisp, hasDisp := sc.lastDispatched[m.ID]; hasDisp {
+		if now.Sub(lastDisp) < time.Duration(intervalSec-1)*time.Second {
 			return false
 		}
 	}

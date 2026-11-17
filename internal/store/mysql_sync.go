@@ -135,6 +135,17 @@ func (m *MySQLSync) LoadMonitors() ([]models.Monitor, error) {
 			mon.LastChecked = &t
 			mon.LastCheckedStr = "Just now"
 		}
+		if mon.IntervalSeconds <= 0 {
+			mon.IntervalSeconds = models.ResolveIntervalSeconds(mon.Interval, 0)
+		}
+		if mon.IntervalSeconds < 10 {
+			mon.IntervalSeconds = 10
+		}
+		mon.OffsetSeconds = models.ComputeMonitorOffset(mon.ID, mon.IntervalSeconds)
+		if mon.Status != "paused" {
+			nextRun := models.ComputeNextRun(mon.ID, mon.IntervalSeconds, time.Now())
+			mon.NextRun = &nextRun
+		}
 		result = append(result, mon)
 	}
 	if err := rows.Err(); err != nil {
